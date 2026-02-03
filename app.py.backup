@@ -1,0 +1,415 @@
+import streamlit as st
+import pyodbc
+import polars as pl
+import os
+from dotenv import load_dotenv
+import pandas as pd
+from datetime import datetime, date
+
+# ----------------------------
+# Configuracion de la pagina
+# ----------------------------
+st.set_page_config(page_title="IaaS Report Monitor", layout="wide")
+load_dotenv()
+
+# ----------------------------
+# Data Load
+# ----------------------------
+@st.cache_data(ttl=600)
+def load_data():
+    DB_USER = os.getenv("DB_USER")
+    DB_PASS = os.getenv("DB_PASSWORD")
+    DB_HOST = os.getenv("DB_HOST")
+    DB_NAME = os.getenv("DB_NAME")
+
+    # Seccion 1: Robustez -> evitar defaults inseguros
+    missing = [k for k, v in {
+        "DB_USER": DB_USER, "DB_PASSWORD": DB_PASS, "DB_HOST": DB_HOST, "DB_NAME": DB_NAME
+    }.items() if not v]
+    if missing:
+        raise RuntimeError(f"Faltan variables de entorno: {', '.join(missing)}")
+
+    conn_str = (
+        "DRIVER={ODBC Driver 17 for SQL Server};"
+        f"SERVER={DB_HOST};DATABASE={DB_NAME};UID={DB_USER};PWD={DB_PASS};"
+        "TrustServerCertificate=yes;"
+    )
+
+    query = """
+    SELECT 
+        ra.StartedProcessingOn AS started_at,
+        ra.CompletionDate AS completed_at,
+        DATEDIFF(SECOND, ra.StartedProcessingOn, ra.CompletionDate) AS duration_seconds,
+        CASE 
+            WHEN ra.Cancelled = 1 THEN 'cancelled'
+            WHEN ra.Failed = 1 OR ra.ErrorMessage IS NOT NULL THEN 'failed'
+            ELSE 'success'
+        END AS execution_status,
+        TRIM(r.ReportName) AS ReportName,
+        TRIM(q.ReportType) AS ReportType
+    FROM reportsdata ra
+    JOIN reports r ON ra.ReportId = r.Id
+    JOIN ReportQueues q ON q.Id = r.QueueNumber
+    WHERE ra.StartedProcessingOn IS NOT NULL
+    """
+
+    with pyodbc.connect(conn_str) as conn:
+        return pl.read_database(query=query, connection=conn)
+
+# ----------------------------
+# Helpers (Seccion 2: robust stats)
+# ----------------------------
+def add_time_features(df: pl.DataFrame) -> pl.DataFrame:
+    return df.with_columns([
+        pl.col("started_at").cast(pl.Datetime),
+        pl.col("completed_at").cast(pl.Datetime),
+        pl.col("started_at").dt.date().alias("date"),
+        pl.col("started_at").dt.hour().alias("hour"),
+        pl.col("started_at").dt.weekday().alias("weekday"),  # 0=Lunes ... 6=Domingo
+    ])
+
+def quality_sanitize(df: pl.DataFrame) -> pl.DataFrame:
+    # Seccion 1: calidad de datos (duraciones y nulos)
+    # - duration_seconds puede ser NULL si completed_at es NULL
+    df2 = df.with_columns([
+        pl.col("duration_seconds").cast(pl.Int64, strict=False)
+    ])
+
+    # Filtrar registros imposibles / muy sospechosos
+    # (ajusta umbrales según tu operación)
+    df2 = df2.filter(
+        pl.col("duration_seconds").is_not_null() &
+        (pl.col("duration_seconds") > 0) &
+        (pl.col("duration_seconds") < 60 * 60 * 6)  # < 6 horas
+    )
+    return df2
+
+def robust_z_mad(expr_x: pl.Expr, expr_median: pl.Expr, expr_mad: pl.Expr) -> pl.Expr:
+    # z robusto: 0.6745 * (x - median) / MAD
+    return (pl.lit(0.6745) * (expr_x - expr_median) / (expr_mad + 1e-9))
+
+def ks_distance_approx(df: pl.DataFrame, col: str, group_cols: list[str], window_a_days: int = 7, window_b_days: int = 30) -> pl.DataFrame:
+    """
+    Drift simplificado (sin scipy): comparamos cuantiles como proxy.
+    - A: ultimos window_a_days
+    - B: ventana previa window_b_days antes de A
+    Retorna tabla por grupo con delta de cuantiles (p50, p90).
+    """
+    max_d = df["date"].max()
+    if max_d is None:
+        return pl.DataFrame()
+
+    a_start = max_d - pd.Timedelta(days=window_a_days - 1)
+    b_end = a_start - pd.Timedelta(days=1)
+    b_start = b_end - pd.Timedelta(days=window_b_days - 1)
+
+    df_a = df.filter((pl.col("date") >= a_start) & (pl.col("date") <= max_d))
+    df_b = df.filter((pl.col("date") >= b_start) & (pl.col("date") <= b_end))
+
+    if df_a.height < 10 or df_b.height < 10:
+        return pl.DataFrame()
+
+    qa = df_a.group_by(group_cols).agg([
+        pl.col(col).quantile(0.50).alias("A_p50"),
+        pl.col(col).quantile(0.90).alias("A_p90"),
+        pl.len().alias("A_n"),
+    ])
+    qb = df_b.group_by(group_cols).agg([
+        pl.col(col).quantile(0.50).alias("B_p50"),
+        pl.col(col).quantile(0.90).alias("B_p90"),
+        pl.len().alias("B_n"),
+    ])
+
+    out = qa.join(qb, on=group_cols, how="inner").with_columns([
+        (pl.col("A_p50") - pl.col("B_p50")).alias("delta_p50"),
+        (pl.col("A_p90") - pl.col("B_p90")).alias("delta_p90"),
+        (pl.col("A_p90") / (pl.col("B_p90") + 1e-9)).alias("ratio_p90"),
+    ]).sort("ratio_p90", descending=True)
+
+    return out
+
+# ----------------------------
+# App
+# ----------------------------
+try:
+    df_raw = load_data()
+    df = add_time_features(df_raw)
+
+    # Seccion 1: sanitizacion
+    df = quality_sanitize(df)
+
+    # ----------------------------
+    # Sidebar (Filtros + UI extra)
+    # ----------------------------
+    st.sidebar.title("Filtros de Analisis")
+
+    # Filtro de fechas
+    min_date = df["date"].min()
+    max_date = df["date"].max()
+    date_selection = st.sidebar.date_input("Rango de Fechas", [min_date, max_date])
+
+    # Filtro de tipos
+    report_types = sorted(df["ReportType"].unique().to_list())
+    selected_types = st.sidebar.multiselect("Tipos de Reporte", report_types, default=report_types)
+
+    # Seccion 5: filtro por status
+    status_list = ["success", "failed", "cancelled"]
+    selected_status = st.sidebar.multiselect("Estatus", status_list, default=status_list)
+
+    # Seccion 5: filtro por ReportName (opcional)
+    # Para no cargar demasiado, lo hacemos solo sobre los top por volumen
+    top_names = (
+        df.group_by("ReportName").agg(pl.len().alias("n"))
+          .sort("n", descending=True).head(200)["ReportName"].to_list()
+    )
+    selected_names = st.sidebar.multiselect(
+        "Reportes (Top 200 por volumen)", top_names, default=[]
+    )
+
+    # Aplicar filtros
+    mask = pl.lit(True)
+
+    if len(date_selection) == 2:
+        start_date, end_date = date_selection
+        mask = mask & (pl.col("date") >= start_date) & (pl.col("date") <= end_date)
+
+    if selected_types:
+        mask = mask & pl.col("ReportType").is_in(selected_types)
+
+    if selected_status:
+        mask = mask & pl.col("execution_status").is_in(selected_status)
+
+    if selected_names:
+        mask = mask & pl.col("ReportName").is_in(selected_names)
+
+    df_filtered = df.filter(mask)
+
+    # ----------------------------
+    # Title
+    # ----------------------------
+    st.title("Panel de Control: Optimizacion de Reportes IaaS")
+
+    # ----------------------------
+    # Seccion 1: Health checks / Freshness
+    # ----------------------------
+    with st.expander("Calidad de datos / Health checks", expanded=False):
+        if df_filtered.height == 0:
+            st.info("No hay datos con los filtros actuales.")
+        else:
+            # Nulos por columna (en df_raw para que tenga sentido)
+            nulls = df_raw.select([
+                pl.all().null_count().name.suffix("_nulls")
+            ]).to_pandas().T.reset_index()
+            nulls.columns = ["columna", "nulos"]
+
+            last_ts = df_filtered["started_at"].max()
+            first_ts = df_filtered["started_at"].min()
+            st.write(f"**Ventana actual:** {first_ts}  →  {last_ts}")
+
+            st.dataframe(nulls, use_container_width=True)
+
+    # ----------------------------
+    # Seccion 1 + 6: KPIs (corregidos)
+    # ----------------------------
+    kpi1, kpi2, kpi3, kpi4 = st.columns(4)
+
+    total_execs = df_filtered.height
+
+    df_success = df_filtered.filter(pl.col("execution_status") == "success")
+    df_failed = df_filtered.filter(pl.col("execution_status") == "failed")
+
+    avg_dur = float(df_success["duration_seconds"].mean()) if df_success.height > 0 else 0.0
+    fail_rate = (df_failed.height / total_execs * 100) if total_execs > 0 else 0.0
+
+    kpi1.metric("Total Ejecuciones", f"{total_execs:,}")
+    kpi2.metric("Duracion Promedio (success)", f"{avg_dur:.2f}s")
+    kpi3.metric("Tasa de Fallos", f"{fail_rate:.1f}%", delta_color="inverse")
+
+    # Seccion 6: en lugar de "MAE (Precision)" -> Variabilidad intra-reporte (MAD mediana)
+    if df_success.height > 0:
+        # MAD por ReportName: median(|x - median(x)|)
+        df_mad = df_success.group_by("ReportName").agg([
+            pl.col("duration_seconds").median().alias("mediana"),
+            (pl.col("duration_seconds") - pl.col("duration_seconds").median()).abs().median().alias("MAD")
+        ])
+        # KPI global: mediana de MADs (robusto)
+        mad_global = float(df_mad["MAD"].median()) if df_mad.height > 0 else 0.0
+        kpi4.metric("Variabilidad (MAD mediana)", f"{mad_global:.2f}s")
+    else:
+        kpi4.metric("Variabilidad (MAD mediana)", "N/A")
+
+    # ----------------------------
+    # Seccion 5: más paneles UI
+    # ----------------------------
+    st.divider()
+    c1, c2 = st.columns(2)
+
+    with c1:
+        st.subheader("Tendencia de Ejecuciones (por estatus)")
+        evol = df_filtered.group_by(["date", "execution_status"]).agg(pl.len().alias("cantidad")).to_pandas()
+        if not evol.empty:
+            piv = evol.pivot(index="date", columns="execution_status", values="cantidad").fillna(0)
+            st.line_chart(piv)
+
+    with c2:
+        st.subheader("Top 10 Reportes mas Lentos (promedio success)")
+        slow = (
+            df_success.group_by("ReportName")
+            .agg(pl.col("duration_seconds").mean().alias("promedio"))
+            .sort("promedio", descending=True)
+            .head(10)
+            .to_pandas()
+        )
+        if not slow.empty:
+            st.bar_chart(data=slow, x="ReportName", y="promedio")
+        else:
+            st.info("Sin datos success para el rango.")
+
+    # Seccion 5: Top fallos
+    st.divider()
+    st.subheader("Top 10 Reportes con mas Fallos")
+    top_fail = (
+        df_failed.group_by("ReportName").agg(pl.len().alias("fallos"))
+        .sort("fallos", descending=True).head(10).to_pandas()
+    )
+    if not top_fail.empty:
+        st.bar_chart(data=top_fail, x="ReportName", y="fallos")
+    else:
+        st.info("No hay fallos en el rango.")
+
+    # Seccion 5: Distribucion de duraciones (histograma simple)
+    st.divider()
+    st.subheader("Distribucion de Duracion (success) - bins aproximados")
+    if df_success.height > 0:
+        # bins simples cada 10s (ajusta)
+        bin_size = st.slider("Tamaño de bin (seg)", 1, 120, 10)
+        hist = (
+            df_success
+            .with_columns(((pl.col("duration_seconds") / bin_size).floor() * bin_size).alias("bin"))
+            .group_by("bin").agg(pl.len().alias("conteo"))
+            .sort("bin")
+            .to_pandas()
+        )
+        st.bar_chart(hist, x="bin", y="conteo")
+    else:
+        st.info("Sin datos success para histograma.")
+
+    # ----------------------------
+    # Seccion 3: Carga horaria + heatmap (Seccion 5)
+    # ----------------------------
+    st.divider()
+    st.subheader("Saturacion por Hora (conteo)")
+    hourly_load = df_filtered.group_by("hour").agg(pl.len().alias("conteo")).sort("hour").to_pandas()
+    if not hourly_load.empty:
+        st.area_chart(data=hourly_load, x="hour", y="conteo")
+
+    st.subheader("Heatmap Hora vs Dia de semana (conteo)")
+    heat = (
+        df_filtered.group_by(["weekday", "hour"]).agg(pl.len().alias("conteo"))
+        .to_pandas()
+    )
+    if not heat.empty:
+        heat_piv = heat.pivot(index="weekday", columns="hour", values="conteo").fillna(0)
+        # Streamlit no tiene heatmap nativo sin libs, pero el dataframe pivot ayuda mucho
+        st.dataframe(heat_piv, use_container_width=True)
+
+    # ----------------------------
+    # Seccion 2: Deteccion de anomalias mejorada
+    #   - Z robusto (MAD)
+    #   - Contextual por (ReportName, hour)
+    # ----------------------------
+    st.divider()
+    st.subheader("Deteccion de Anomalias (Robusto + Contextual)")
+
+    method = st.radio(
+        "Metodo",
+        ["Robusto por ReportName (MAD)", "Contextual (ReportName + hora)"],
+        horizontal=True
+    )
+
+    z_threshold = st.slider("Umbral de Sensibilidad (z robusto)", 2.0, 10.0, 3.5)
+
+    if df_filtered.height == 0:
+        st.info("No hay datos con los filtros actuales.")
+    else:
+        base_df = df_filtered
+
+        if method == "Robusto por ReportName (MAD)":
+            # median y MAD por ReportName
+            df_anom = base_df.with_columns([
+                pl.col("duration_seconds").median().over("ReportName").alias("mediana_rep"),
+                (pl.col("duration_seconds") - pl.col("duration_seconds").median().over("ReportName")).abs().median().over("ReportName").alias("mad_rep"),
+            ]).with_columns([
+                robust_z_mad(
+                    pl.col("duration_seconds"),
+                    pl.col("mediana_rep"),
+                    pl.col("mad_rep")
+                ).alias("z_robusto")
+            ]).filter(
+                (pl.col("execution_status") == "success") &
+                (pl.col("mad_rep") > 0) &
+                (pl.col("z_robusto") > z_threshold)
+            ).sort("z_robusto", descending=True)
+
+        else:
+            # Contextual: por ReportName + hour
+            df_anom = base_df.with_columns([
+                pl.col("duration_seconds").median().over(["ReportName", "hour"]).alias("mediana_ctx"),
+                (pl.col("duration_seconds") - pl.col("duration_seconds").median().over(["ReportName", "hour"])).abs().median().over(["ReportName", "hour"]).alias("mad_ctx"),
+            ]).with_columns([
+                robust_z_mad(
+                    pl.col("duration_seconds"),
+                    pl.col("mediana_ctx"),
+                    pl.col("mad_ctx")
+                ).alias("z_robusto")
+            ]).filter(
+                (pl.col("execution_status") == "success") &
+                (pl.col("mad_ctx") > 0) &
+                (pl.col("z_robusto") > z_threshold)
+            ).sort("z_robusto", descending=True)
+
+        if df_anom.height > 0:
+            st.warning(f"Se detectaron {df_anom.height} anomalias (z robusto > {z_threshold}).")
+            st.dataframe(
+                df_anom.select([
+                    "started_at", "ReportType", "ReportName", "hour",
+                    "duration_seconds", "execution_status",
+                    pl.col("z_robusto"),
+                ]).to_pandas(),
+                use_container_width=True
+            )
+        else:
+            st.success("No hay anomalias detectadas bajo este umbral.")
+
+    # ----------------------------
+    # Seccion 2: Drift (proxy por cuantiles)
+    # ----------------------------
+    st.divider()
+    st.subheader("Drift de rendimiento (proxy por cuantiles)")
+    st.caption("Compara cuantiles de duración: últimos 7 días vs ventana previa de 30 días (aprox).")
+
+    drift_level = st.selectbox("Nivel de análisis", ["Por ReportType", "Por ReportName (Top 50)"])
+
+    if df_success.height > 0:
+        if drift_level == "Por ReportType":
+            drift_tbl = ks_distance_approx(df_success, "duration_seconds", ["ReportType"])
+        else:
+            top50 = (
+                df_success.group_by("ReportName").agg(pl.len().alias("n"))
+                .sort("n", descending=True).head(50)["ReportName"].to_list()
+            )
+            drift_tbl = ks_distance_approx(
+                df_success.filter(pl.col("ReportName").is_in(top50)),
+                "duration_seconds",
+                ["ReportName"]
+            )
+
+        if drift_tbl.height > 0:
+            st.dataframe(drift_tbl.to_pandas(), use_container_width=True)
+        else:
+            st.info("No hay suficientes datos para comparar ventanas (se requieren al menos ~10 ejecuciones por ventana).")
+    else:
+        st.info("Sin datos success para drift.")
+
+except Exception as e:
+    st.error(f"Error en la aplicacion: {e}")

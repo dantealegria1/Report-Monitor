@@ -1,0 +1,7 @@
+pyodbc
+polars
+pandas
+matplotlib
+seaborn
+connectorx
+pyarrow
