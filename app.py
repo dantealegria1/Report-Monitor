@@ -11,7 +11,10 @@ from config import validate_config
 from db.database import load_reports_data
 
 # Data processing utilities
-from utils.data_processing import add_time_features, quality_sanitize
+from utils.data_processing import (
+    add_time_features, quality_sanitize,
+    filter_by_date_range, build_hourly_report_count
+)
 
 # UI Components
 from components.filters import render_sidebar_filters, apply_filters
@@ -29,7 +32,7 @@ from components.anomaly_detection import render_anomaly_detection, render_drift_
 # ----------------------------
 # Page Configuration
 # ----------------------------
-st.set_page_config(page_title="IaaS Report Monitor", layout="wide")
+st.set_page_config(page_title="IaaS Report Monitor", layout="wide", page_icon="📈")
 
 # ----------------------------
 # Main Application
@@ -42,6 +45,12 @@ try:
     df_raw = load_reports_data()
     df = add_time_features(df_raw)
     df = quality_sanitize(df)
+    
+    # Day 1: freeze analysis window (A -> B)
+    df = filter_by_date_range(df, "2024-01-01", "2026-12-31")
+    
+    # Day 1: create hourly time series (available in Time Series Analysis page)
+    hourly_ts = build_hourly_report_count(df)
     
     # Render sidebar filters
     filters = render_sidebar_filters(df)
