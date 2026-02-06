@@ -80,99 +80,120 @@ def render_baseline_page(hourly_ts: pl.DataFrame):
     mae2, rmse2, n2 = _mae_rmse(df, y_col, "y_pred_last_week")
 
     st.title("Baseline Forecast (Naive)")
+    st.markdown("""
+    Naive baselines are simple but powerful benchmarks. 
+    They assume the future will look like the recent past.
+    """)
 
-    c1, c2, c3 = st.columns(3)
-    c1.metric("MAE (last hour)", "N/A" if mae1 is None else f"{mae1:.4f}")
-    c2.metric("RMSE (last hour)", "N/A" if rmse1 is None else f"{rmse1:.4f}")
-    c3.metric("Rows used", f"{n1}")
+    # --- Metrics Section ---
+    st.subheader("Performance Metrics (Test Set)")
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.info("**Baseline 1: Last Hour** (y at t-1)")
+        m1, m2, m3 = st.columns(3)
+        m1.metric("MAE", "N/A" if mae1 is None else f"{mae1:.4f}")
+        m2.metric("RMSE", "N/A" if rmse1 is None else f"{rmse1:.4f}")
+        m3.metric("Samples", f"{n1}")
 
-    st.caption("Baseline 2 (same hour last week) requiere por lo menos 168 horas de historia.")
-
-    c4, c5, c6 = st.columns(3)
-    c4.metric("MAE (last week)", "N/A" if mae2 is None else f"{mae2:.4f}")
-    c5.metric("RMSE (last week)", "N/A" if rmse2 is None else f"{rmse2:.4f}")
-    c6.metric("Rows used", f"{n2}")
+    with col2:
+        st.info("**Baseline 2: Same Hour Last Week** (y at t-168)")
+        m4, m5, m6 = st.columns(3)
+        m4.metric("MAE", "N/A" if mae2 is None else f"{mae2:.4f}")
+        m5.metric("RMSE", "N/A" if rmse2 is None else f"{rmse2:.4f}")
+        m6.metric("Samples", f"{n2}")
 
     st.divider()
 
-    # Ventana para gráficas
-    days = st.slider("Ventana (días)", min_value=1, max_value=30, value=5)
+    # --- Visualization Section ---
+    st.subheader("Forecasting Visualization")
+    days = st.slider("Visualization Window (days)", min_value=1, max_value=30, value=7)
     hours = int(days * 24)
 
     tail = df.tail(hours)
-
     tail_plot = (
         tail.with_columns(
-            pl.col(ts_col).dt.strftime("%Y-%m-%dT%H:%M:%S").alias("timestamp_hour")
+            pl.col(ts_col).dt.strftime("%Y-%m-%dT%H:%M:%S").alias("timestamp_str")
         )
-        .rename({y_col: "y"})
+        .rename({y_col: "actual"})
     )
 
-    st.subheader("Real vs predicción (last hour)")
-    chart_data = tail_plot.select(["timestamp_hour", "y", "y_pred_last_hour"]).to_dicts()
-
-    # Debug opcional para confirmar que hay filas
-    # st.write("chart rows:", len(chart_data))
-    # st.write(chart_data[:3])
-
+    # Combined Comparison Chart
+    st.markdown("**Actual vs Naive Baselines**")
     st.vega_lite_chart(
-        chart_data,
+        tail_plot.to_dicts(),
         {
-            "mark": "line",
+            "mark": {"type": "line", "point": False},
             "encoding": {
-                "x": {"field": "timestamp_hour", "type": "temporal"},
-                "y": {"field": "value", "type": "quantitative"},
-                "color": {"field": "series", "type": "nominal"},
+                "x": {"field": "timestamp_str", "type": "temporal", "title": "Time"},
+                "y": {"field": "value", "type": "quantitative", "title": "Report Count"},
+                "color": {
+                    "field": "series", 
+                    "type": "nominal",
+                    "scale": {
+                        "domain": ["actual", "y_pred_last_hour", "y_pred_last_week"],
+                        "range": ["#1f77b4", "#ff7f0e", "#2ca02c"]
+                    }
+                }
             },
-            "transform": [{"fold": ["y", "y_pred_last_hour"], "as": ["series", "value"]}],
-        },
-        use_container_width=True,
-    )
-
-    st.subheader("Error absoluto por hora (last hour baseline)")
-    tail_err = tail_plot.with_columns(
-        (pl.col("y") - pl.col("y_pred_last_hour")).abs().alias("abs_error")
-    )
-    err_data = tail_err.select(["timestamp_hour", "abs_error"]).to_dicts()
-
-    st.vega_lite_chart(
-        err_data,
-        {
-            "mark": "line",
-            "encoding": {
-                "x": {"field": "timestamp_hour", "type": "temporal"},
-                "y": {"field": "abs_error", "type": "quantitative"},
-            },
-        },
-        use_container_width=True,
-    )
-
-
-    # Error absoluto
-    st.subheader("Error absoluto por hora (last hour baseline)")
-    tail_err = tail_plot.with_columns(
-        (pl.col("y") - pl.col("y_pred_last_hour")).abs().alias("abs_error")
-    )
-    err_data = tail_err.select(["timestamp_hour", "abs_error"]).to_dicts()
-
-    st.vega_lite_chart(
-        {"values": err_data},
-        {
-            "mark": "line",
-            "encoding": {
-                "x": {"field": "timestamp_hour", "type": "temporal"},
-                "y": {"field": "abs_error", "type": "quantitative"},
-            },
+            "transform": [
+                {"fold": ["actual", "y_pred_last_hour", "y_pred_last_week"], "as": ["series", "value"]}
+            ],
+            "width": "container",
+            "height": 400
         },
         use_container_width=True,
     )
 
     st.divider()
-    st.subheader("Muestra de datos")
+
+    # --- Residual Analysis ---
+    st.subheader("Residual Analysis (Last Hour Baseline)")
+    
+    tail_res = tail_plot.with_columns(
+        (pl.col("actual") - pl.col("y_pred_last_hour")).alias("residual")
+    ).drop_nulls()
+    
+    c_res1, c_res2 = st.columns(2)
+    
+    with c_res1:
+        st.markdown("**Residuals over Time**")
+        st.vega_lite_chart(
+            tail_res.select(["timestamp_str", "residual"]).to_dicts(),
+            {
+                "mark": {"type": "bar", "color": "#d62728"},
+                "encoding": {
+                    "x": {"field": "timestamp_str", "type": "temporal", "title": "Time"},
+                    "y": {"field": "residual", "type": "quantitative", "title": "Error"}
+                },
+                "width": "container",
+                "height": 300
+            },
+            use_container_width=True
+        )
+        
+    with c_res2:
+        st.markdown("**Error Distribution**")
+        st.vega_lite_chart(
+            tail_res.select("residual").to_dicts(),
+            {
+                "mark": {"type": "bar", "color": "#9467bd"},
+                "encoding": {
+                    "x": {"bin": True, "field": "residual", "title": "Error Magnitude"},
+                    "y": {"aggregate": "count", "title": "Frequency"}
+                },
+                "width": "container",
+                "height": 300
+            },
+            use_container_width=True
+        )
+
+    st.divider()
+    st.subheader("Sample Data")
     st.dataframe(
-        tail_plot.select(["timestamp_hour", "y", "y_pred_last_hour", "y_pred_last_week"])
-        .tail(50)
-        .to_dicts()
+        tail_plot.select(["timestamp_str", "actual", "y_pred_last_hour", "y_pred_last_week"])
+        .tail(50),
+        use_container_width=True
     )
 
 

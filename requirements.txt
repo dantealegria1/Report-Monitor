@@ -5,3 +5,5 @@ matplotlib
 seaborn
 connectorx
 pyarrow
+prophet
+streamlit

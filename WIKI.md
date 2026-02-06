@@ -400,40 +400,67 @@ Edit `config.py` to adjust:
 
 ---
 
-## Glossary
+## Advanced Forecasting (Day 3)
 
-- **MAD**: Median Absolute Deviation - robust measure of variability
-- **Robust Z-score**: Anomaly score resistant to outliers
-- **Drift**: Gradual change in performance over time
-- **Quantile**: Value below which a percentage of data falls (p50 = median, p90 = 90th percentile)
-- **Contextual**: Taking into account additional factors (like time of day)
+The dashboard includes a dedicated forecasting module using **Meta's Prophet**, enhanced with hybrid machine learning techniques.
+
+### 1. The Prophet Model
+Prophet is an additive model where non-linear trends are fit with yearly, weekly, and daily seasonality, plus holiday effects.
+
+**Key Hyperparameters (Advanced Mode):**
+*   **Changepoint Prior Scale**: Controls trend flexibility. 
+    *   *High (0.15+)*: Model reacts quickly to shifts but may overfit noise.
+    *   *Low (0.001-0.01)*: Model stays on a rigid path.
+*   **Seasonality Mode**:
+    *   *Additive*: Seasonal effects are constant.
+    *   *Multiplicative*: Seasonal spikes grow as the total volume grows (better for exponential growth).
+*   **Log Transform (log1p)**: Highly recommended for report count data. It stabilizes variance and handles large spikes by calculating errors in percentage terms.
 
 ---
 
-## FAQ
+### 2. Hybrid Mode (Lag-1 Regressor)
+This is the "secret weapon" to beat the baseline. 
+*   **The Problem**: In highly autocorrelated data, the value at hour *t* is almost always similar to hour *t-1*. A standard Prophet model only looks at the "logical clock" (time/date), which is why naive baselines often win.
+*   **The Solution**: We add the previous hour's value (`y` at `t-1`) as a continuous regressor to the Prophet model. This combines the "memory" of the baseline with the "logic" (seasonality/holidays) of Prophet.
 
-**Q: Why are failed reports excluded from average duration?**  
-A: Failed reports often fail quickly or timeout, which would skew the average and not represent normal performance.
+---
 
-**Q: Why use MAD instead of standard deviation?**  
-A: MAD is more robust to outliers. A few extreme values won't distort the variability metric.
+### 3. Expert Preset Configuration
+To simplify usage, an **Expert Preset** is available that automatically applies:
+- **Daily, Weekly, and Yearly Seasonality**: On.
+- **Log Transformation**: On.
+- **Hybrid Lag-1 Regressor**: On.
+- **Flexible Trend (0.15)**: To capture sudden system shifts.
+- **US Holidays**: Included automatically.
 
-**Q: What's a good z_robusto threshold?**  
-A: Start with 3.5. Adjust based on how many false positives you get.
+---
 
-**Q: How much historical data do I need for drift detection?**  
-A: At least 37 days (7 recent + 30 historical), with at least 10 executions per report in each window.
+### 4. How to Beat the Baseline
+To outperform the "last hour" naive model:
+1.  **Check Autocorrelation**: Use the Advanced Diagnostics to see if Lag 1 is high (>0.8).
+2.  **Enable Hybrid Mode**: Essential if autocorrelation is high.
+3.  **Apply Log Transform**: Crucial if you have spikes that reach 10x the median value.
+4.  **Use Multiplicative Seasonality**: If spikes are bigger on high-volume days.
 
-**Q: Can I export the data?**  
-A: Currently no, but this is a planned enhancement.
+### 5. Forecast Components
+*   **Trend**: The long-term direction (up, down, or flat).
+*   **Seasonality**: Repeating patterns (e.g., higher volume every Monday at 9 AM).
+*   **Holidays**: Temporary shifts caused by non-business days.
+
+---
+
+## Glossary
+*   **MAE**: Mean Absolute Error (average magnitude of errors).
+*   **RMSE**: Root Mean Square Error (penalizes large errors more heavily).
+*   **Autocorrelation**: How much the current value depends on past values.
+*   **Lag**: The time delay (e.g., Lag 1 = 1 hour ago).
+*   **Residual**: The difference between Actual and Predicted (`Actual - Pred`).
 
 ---
 
 ## Support
-
-For issues or questions:
-1. Check this wiki first
-2. Review the code comments in each module
-3. Contact the development team
+For issues or questions regarding the forecasting logic:
+1. Review the **Forecasting Wiki** expander within the app.
+2. Check the `utils/prophet_forecast.py` module for implementation details.
 
 **Last Updated**: February 2026
