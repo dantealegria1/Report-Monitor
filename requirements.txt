@@ -7,3 +7,4 @@ connectorx
 pyarrow
 prophet
 streamlit
+scipy

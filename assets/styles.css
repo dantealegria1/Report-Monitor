@@ -1,0 +1,73 @@
+/* Global Styles for Report Monitor
+ */
+
+/* Modern Font */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&display=swap');
+
+html,
+body,
+.stApp :not(i):not([class*="material-icons"]):not([class*="material-symbols"]) {}
+
+/* Glassmorphism KPI Cards */
+div[data-testid="stMetric"] {
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    backdrop-filter: blur(10px);
+    border-radius: 12px;
+    padding: 15px 20px !important;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    transition: transform 0.3s ease, box-shadow 0.3s ease;
+}
+
+div[data-testid="stMetric"]:hover {
+    transform: translateY(-5px);
+    box-shadow: 0 8px 15px rgba(0, 0, 0, 0.2);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+/* Custom Headers */
+h1 {
+    font-weight: 600 !important;
+    color: #f0f2f6 !important;
+    letter-spacing: -0.5px;
+}
+
+h2,
+h3 {
+    font-weight: 600 !important;
+    color: #e0e0e0 !important;
+}
+
+/* Tabs Styling */
+.stTabs [data-baseweb="tab-list"] {
+    gap: 10px;
+}
+
+.stTabs [data-baseweb="tab"] {
+    height: 50px;
+    white-space: pre-wrap;
+    background-color: rgba(255, 255, 255, 0.05);
+    border-radius: 8px 8px 0px 0px;
+    gap: 1px;
+    padding-top: 10px;
+    padding-bottom: 10px;
+}
+
+.stTabs [aria-selected="true"] {
+    background-color: rgba(255, 255, 255, 0.1) !important;
+    border-bottom: 2px solid #1f77b4 !important;
+}
+
+/* Divider Styling */
+hr {
+    margin-top: 2rem !important;
+    margin-bottom: 2rem !important;
+    opacity: 0.1;
+}
+
+/* Vega-Lite Chart Containers */
+div[data-testid="stVegaLiteChart"] {
+    background: rgba(255, 255, 255, 0.02);
+    border-radius: 12px;
+    padding: 10px;
+}

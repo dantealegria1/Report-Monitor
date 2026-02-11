@@ -22,6 +22,12 @@ from utils.baseline import add_naive_predictions
 
 st.set_page_config(page_title="Prophet Forecast", layout="wide")
 
+# Inject Custom CSS
+try:
+    with open("assets/styles.css") as f:
+        st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
+except FileNotFoundError:
+    pass
 
 def _infer_columns(hourly_ts: pl.DataFrame) -> tuple[str, str]:
     """
@@ -81,37 +87,8 @@ def render_prophet_page(hourly_ts: pl.DataFrame):
     
     st.title("Prophet Forecast")
     
-    # ----------------------------
-    # Forecasting Wiki
-    # ----------------------------
-    with st.expander("Forecasting Wiki & Guide - How to beat the baseline"):
-        st.markdown("""
-        ### Understanding the Settings
-        *   **Changepoint Prior Scale**: Controls the 'flexibility' of the trend. 
-            *   *Increase* if the trend changes rapidly or has sudden shifts.
-            *   *Decrease* if the model is following noise too closely (overfitting).
-        *   **Seasonality Prior Scale**: Controls how much the model follows periodic patterns (daily/weekly).
-            *   *Increase* if you clearly see repeating shapes every day/week.
-        *   **Log Transform (log1p)**: It calculates error in percentages rather than absolute units, which handles spikes much better.
-        *   **Growth Mode**: 
-            *   *Linear*: Best for data that is generally increasing or decreasing.
-            *   *Flat*: Best for data that stays around a constant average but has spikes.
-
-        ### Why is the Naive Baseline winning?
-        The **Baseline (last hour)** simply says "Next hour will be the same as this hour". 
-        *   If your data has high **Autocorrelation** (value at $t \approx t-1$), the baseline is very efficient.
-        *   Prophet tries to find the *logical signal*. If the data is very noisy, the signal is harder to find than just copying the previous value.
-        
-        **Strategy to win:**
-        1. Enable **Log Transform**.
-        2. Set **Changepoint Prior Scale** higher (0.1 to 0.3) so Prophet can 'react' faster.
-        3. Use **Multiplicative** seasonality if the spikes get bigger as the total count increases.
-        """)
-    
-    st.markdown("""
-    This page trains a Prophet forecasting model and compares its performance 
-    against the naive baseline from Day 2. Use the sidebar to tune settings.
-    """)
+    # Information Alert
+    st.info("Advanced forecast based on Meta Prophet. For more details on interpreting these charts, consult the Wiki page.")
 
     # ----------------------------
     # Model Training & Prediction
@@ -167,6 +144,7 @@ def render_prophet_page(hourly_ts: pl.DataFrame):
         
         train_ratio = st.sidebar.slider(
             "Training Data Ratio",
+            key="slider_train_ratio",
             min_value=0.5,
             max_value=0.95,
             value=0.8,
@@ -184,44 +162,41 @@ def render_prophet_page(hourly_ts: pl.DataFrame):
     # Split data
     train_df, test_df = train_test_split_temporal(df, train_ratio=train_ratio, ts_col=ts_col, y_col=y_col)
     
-    # Display split info
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Total Hours", f"{df.height:,}")
-    col2.metric("Training Hours", f"{train_df.height:,}")
-    col3.metric("Test Hours", f"{test_df.height:,}")
-    
-    st.divider()
-    
-    # Help message for low performance
+    # Help message for low performance (moved before training/metrics for better visibility)
     if st.session_state.get("last_improvement", 0) < 0:
         st.info("Tip for Improvement: To beat a strong baseline, try: \n"
                 "1. Enabling Log Transform (highly effective for count data)\n"
                 "2. Increasing Changepoint Prior Scale to 0.1 or 0.2\n"
                 "3. Setting Seasonality Mode to Multiplicative if variance grows with the mean.")
     
+    
+    # Caching the model training to avoid re-running on every interaction
+    @st.cache_resource(show_spinner="Training Prophet model...", ttl=3600)
+    def train_prophet_model_cached(train_df, **kwargs):
+        return train_prophet_model(train_df, **kwargs)
+
     # Train Prophet model
-    with st.spinner("Training Prophet model..."):
-        try:
-            model, log_used = train_prophet_model(
-                train_df,
-                ts_col=ts_col,
-                y_col=y_col,
-                daily_seasonality=daily_seasonality,
-                weekly_seasonality=weekly_seasonality,
-                yearly_seasonality=yearly_seasonality,
-                changepoint_prior_scale=changepoint_prior_scale,
-                seasonality_prior_scale=seasonality_prior_scale,
-                seasonality_mode=seasonality_mode,
-                changepoint_range=changepoint_range,
-                log_transform=log_transform,
-                growth=growth,
-                country_holidays=country_holidays,
-                add_lag1=add_lag1
-            )
-            st.success("Prophet model trained successfully!")
-        except Exception as e:
-            st.error(f"Error training Prophet model: {e}")
-            st.stop()
+    try:
+        model, log_used = train_prophet_model_cached(
+            train_df,
+            ts_col=ts_col,
+            y_col=y_col,
+            daily_seasonality=daily_seasonality,
+            weekly_seasonality=weekly_seasonality,
+            yearly_seasonality=yearly_seasonality,
+            changepoint_prior_scale=changepoint_prior_scale,
+            seasonality_prior_scale=seasonality_prior_scale,
+            seasonality_mode=seasonality_mode,
+            changepoint_range=changepoint_range,
+            log_transform=log_transform,
+            growth=growth,
+            country_holidays=country_holidays,
+            add_lag1=add_lag1
+        )
+        st.success("Prophet model trained successfully (Cached)!")
+    except Exception as e:
+        st.error(f"Error training Prophet model: {e}")
+        st.stop()
     
     # Get last training value for lag1 continuity
     last_y_train = train_df.select(y_col).tail(1).item()
@@ -249,276 +224,332 @@ def render_prophet_page(hourly_ts: pl.DataFrame):
     prophet_test_metrics = compute_metrics(test_df, test_predictions, y_col=y_col, pred_col="y_pred_prophet", ts_col=ts_col)
     prophet_train_metrics = compute_metrics(train_df, train_predictions, y_col=y_col, pred_col="y_pred_prophet", ts_col=ts_col)
     
-    # Compute baseline metrics on test set
+    # Compute baseline metrics on test set (RESTORED MISSING BLOCK)
     test_with_baseline = add_naive_predictions(test_df, y_col=y_col)
     baseline_mae_lh, baseline_rmse_lh, n_lh = _baseline_metrics(test_with_baseline, y_col, "y_pred_last_hour")
     baseline_mae_lw, baseline_rmse_lw, n_lw = _baseline_metrics(test_with_baseline, y_col, "y_pred_last_week")
     
-    # Display metrics comparison
-    st.subheader("Model Performance Comparison")
-    
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        st.metric(
-            "Prophet MAE (Test)",
-            f"{prophet_test_metrics['MAE']:.4f}" if prophet_test_metrics['MAE'] is not None else "N/A",
-            help="Mean Absolute Error on test set"
-        )
-    
-    with col2:
-        st.metric(
-            "Prophet MAE (Train)",
-            f"{prophet_train_metrics['MAE']:.4f}" if prophet_train_metrics['MAE'] is not None else "N/A",
-            help="Mean Absolute Error on training set (diagnostics)"
-        )
-    
-    with col3:
-        if baseline_mae_lh is not None and prophet_test_metrics['MAE'] is not None:
-            improvement = ((baseline_mae_lh - prophet_test_metrics['MAE']) / baseline_mae_lh) * 100
-            st.session_state["last_improvement"] = improvement
-            st.metric(
-                "Improvement over Baseline",
-                f"{improvement:.2f}%",
-                delta=f"{improvement:.2f}%",
-                help="Percentage improvement in MAE compared to last hour baseline on Test set"
-            )
-        else:
-            st.metric("Improvement", "N/A")
-    
-    with col4:
-        if prophet_train_metrics['MAE'] and prophet_test_metrics['MAE']:
-            ratio = prophet_test_metrics['MAE'] / prophet_train_metrics['MAE']
-            st.metric(
-                "Overfitting Ratio",
-                f"{ratio:.2f}x",
-                help="Test MAE / Train MAE. Values > 1.5x suggest overfitting."
-            )
-    
-    st.divider()
-    
-    # Baseline comparison table
-    st.subheader("Baseline Comparison (Test Set)")
-    comparison_data = {
-        "Model": ["Prophet", "Baseline (last hour)", "Baseline (last week)"],
-        "MAE": [
-            f"{prophet_test_metrics['MAE']:.4f}" if prophet_test_metrics['MAE'] is not None else "N/A",
-            f"{baseline_mae_lh:.4f}" if baseline_mae_lh is not None else "N/A",
-            f"{baseline_mae_lw:.4f}" if baseline_mae_lw is not None else "N/A"
-        ],
-        "RMSE": [
-            f"{prophet_test_metrics['RMSE']:.4f}" if prophet_test_metrics['RMSE'] is not None else "N/A",
-            f"{baseline_rmse_lh:.4f}" if baseline_rmse_lh is not None else "N/A",
-            f"{baseline_rmse_lw:.4f}" if baseline_rmse_lw is not None else "N/A"
-        ],
-        "Samples": [
-            prophet_test_metrics['n_samples'],
-            n_lh,
-            n_lw
-        ]
-    }
-    st.dataframe(comparison_data, use_container_width=True)
-    
-    st.divider()
-    
-    # Visualization controls
-    st.subheader("📈 Forecast Visualization")
-    days_to_show = st.slider("Visualization Window (days)", min_value=1, max_value=30, value=7)
-    hours_to_show = int(days_to_show * 24)
-    
-    # Prepare data for visualization
-    test_with_pred = test_df.join(test_predictions, on=ts_col, how="inner")
-    test_with_pred = test_with_pred.tail(hours_to_show)
-    
-    # Add baseline predictions for comparison
-    test_with_pred = add_naive_predictions(test_with_pred, y_col=y_col)
-    
-    # Convert to format for plotting
+    # --- Prepare Visualization Data ---
+    # Merge test predictions with baseline
+    # Merge test predictions with actuals and baseline
+    # Merge test predictions with actuals and baseline
     plot_data = (
-        test_with_pred.with_columns(
-            pl.col(ts_col).dt.strftime("%Y-%m-%dT%H:%M:%S").alias("timestamp_str")
-        )
+        test_predictions
+        .join(test_df.select([ts_col, y_col]), on=ts_col)
         .rename({y_col: "actual"})
-        .select(["timestamp_str", "actual", "y_pred_prophet", "y_pred_last_hour", "yhat_lower", "yhat_upper"])
+        .join(test_with_baseline.select([ts_col, "y_pred_last_hour", "y_pred_last_week"]), on=ts_col)
+    )
+    plot_data = plot_data.with_columns(
+        pl.col(ts_col).dt.strftime("%Y-%m-%dT%H:%M:%S").alias("timestamp_str")
     )
     
-    chart_data = plot_data.to_dicts()
-    
-    show_intervals = st.checkbox("Show Prediction Intervals (Uncertainty)", value=True)
-    
-    # Actual vs Predictions chart with intervals
+    # Prepare chart layers
     layers = [
-        # Main lines
+        # Confidence Interval
         {
-            "mark": {"type": "line", "point": False},
-            "encoding": {
-                "x": {"field": "timestamp_str", "type": "temporal", "title": "Time"},
-                "y": {"field": "value", "type": "quantitative", "title": "Report Count"},
-                "color": {
-                    "field": "series",
-                    "type": "nominal",
-                    "title": "Series",
-                    "scale": {
-                        "domain": ["actual", "y_pred_prophet", "y_pred_last_hour"],
-                        "range": ["#1f77b4", "#ff7f0e", "#2ca02c"]
-                    }
-                }
-            },
-            "transform": [
-                {
-                    "fold": ["actual", "y_pred_prophet", "y_pred_last_hour"],
-                    "as": ["series", "value"]
-                }
-            ]
-        }
-    ]
-    
-    if show_intervals:
-        layers.insert(0, {
-            "mark": {"type": "area", "opacity": 0.3, "color": "#ff7f0e"},
+            "mark": {"type": "area", "color": "#1f77b4", "opacity": 0.2},
             "encoding": {
                 "x": {"field": "timestamp_str", "type": "temporal"},
                 "y": {"field": "yhat_lower", "type": "quantitative"},
-                "y2": {"field": "yhat_upper", "type": "quantitative"},
-                "tooltip": None
+                "y2": {"field": "yhat_upper"}
             }
-        })
-
-    st.vega_lite_chart(
-        chart_data,
-        {
-            "layer": layers,
-            "width": "container",
-            "height": 450
         },
-        use_container_width=True
+        # Actual values
+        {
+            "mark": {"type": "line", "color": "#333", "strokeWidth": 1, "opacity": 0.5},
+            "encoding": {
+                "x": {"field": "timestamp_str", "type": "temporal"},
+                "y": {"field": "actual", "type": "quantitative"},
+                "tooltip": [{"field": "timestamp_str", "type": "temporal"}, {"field": "actual"}]
+            }
+        },
+        # Prophet Prediction
+        {
+            "mark": {"type": "line", "color": "#1f77b4", "strokeWidth": 2},
+            "encoding": {
+                "x": {"field": "timestamp_str", "type": "temporal"},
+                "y": {"field": "y_pred_prophet", "type": "quantitative"},
+                "tooltip": [{"field": "y_pred_prophet", "title": "Prophet Pred"}]
+            }
+        }
+    ]
+    
+    # Prepare Residuals data
+    # Prepare Residuals data
+    # residuals_df is derived from plot_data (which now has 'actual' and 'y_pred_prophet')
+    residuals_df = plot_data.with_columns(
+        (pl.col("actual") - pl.col("y_pred_prophet")).alias("residual")
     )
     
+    # ACF Calculation
+    import scipy.stats as stats
+    y_values = residuals_df["residual"].to_numpy()
+    y_var = np.var(y_values)
+    acf_values = []
+    if y_var > 0:
+        for lag in range(1, 25):
+            corr = np.corrcoef(y_values[lag:], y_values[:-lag])[0, 1]
+            acf_values.append({"lag": lag, "correlation": corr})
+
+    # --- Metrics & Results Tabs ---
+    # --- Metrics & Results Tabs ---
     st.divider()
     
-    # Forecast components
-    st.subheader("Forecast Components")
+    # ----------------------------
+    # Global Visualization Controls
+    # ----------------------------
+    st.markdown("### Forecast Visualization & Analysis")
     
-    with st.expander("View Prophet Forecast Components"):
+    # Date Range Picker
+    min_date = plot_data.select(pl.col(ts_col).min()).item()
+    max_date = plot_data.select(pl.col(ts_col).max()).item()
+    
+    # Default to last 7 days
+    default_start = max_date - pd.Timedelta(days=7)
+    
+    c_global_date1, c_global_date2 = st.columns([1, 3])
+    with c_global_date1:
+        date_range = st.date_input(
+            "Select Date Range (applies to all charts)",
+            value=(default_start, max_date),
+            min_value=min_date,
+            max_value=max_date,
+            key="prophet_date_range_global"
+        )
+    
+    # Determine filter range
+    if len(date_range) == 2:
+        start_date, end_date = date_range
+        # Ensure start_date/end_date are datetime for comparison if they are date objects
+        start_dt = pd.Timestamp(start_date)
+        end_dt = pd.Timestamp(end_date) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1) # End of day
+    else:
+        # Fallback if range is invalid
+        start_dt = default_start
+        end_dt = max_date
+
+    # Filter data for all tabs
+    filtered_plot_data = plot_data.filter(
+        (pl.col(ts_col) >= start_dt) & (pl.col(ts_col) <= end_dt)
+    )
+    
+    filtered_test_df = test_df.filter(
+        (pl.col(ts_col) >= start_dt) & (pl.col(ts_col) <= end_dt)
+    )
+
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "Performance Summary", 
+        "Forecast Visualization", 
+        "Model Components", 
+        "Diagnostics & Residuals"
+    ])
+
+    with tab1:
+        st.subheader("Model Comparison")
+        
+        # Key metrics in columns
+        mc1, mc2, mc3, mc4 = st.columns(4)
+        with mc1:
+            st.metric(
+                "Prophet MAE (Test)",
+                f"{prophet_test_metrics['MAE']:.4f}" if prophet_test_metrics['MAE'] is not None else "N/A",
+                help="Mean Absolute Error on test set"
+            )
+        with mc2:
+            st.metric(
+                "Prophet MAE (Train)",
+                f"{prophet_train_metrics['MAE']:.4f}" if prophet_train_metrics['MAE'] is not None else "N/A",
+                help="Mean Absolute Error on training set (diagnostics)"
+            )
+        with mc3:
+            if baseline_mae_lh is not None and prophet_test_metrics['MAE'] is not None:
+                improvement = ((baseline_mae_lh - prophet_test_metrics['MAE']) / baseline_mae_lh) * 100
+                st.session_state["last_improvement"] = improvement
+                st.metric(
+                    "Improvement vs Baseline",
+                    f"{improvement:.2f}%",
+                    delta=f"{improvement:.2f}%",
+                    help="Percentage improvement in MAE compared to last hour baseline on Test set"
+                )
+        with mc4:
+            if prophet_train_metrics['MAE'] and prophet_test_metrics['MAE']:
+                ratio = prophet_test_metrics['MAE'] / prophet_train_metrics['MAE']
+                st.metric(
+                    "Ratio Overfitting",
+                    f"{ratio:.2f}x",
+                    help="Test MAE / Train MAE. Values > 1.5x suggest overfitting."
+                )
+
+        st.divider()
+        st.markdown("**Comparison Table (Test Set)**")
+        comparison_data = {
+            "Model": ["Prophet", "Baseline (last hour)", "Baseline (last week)"],
+            "MAE": [
+                f"{prophet_test_metrics['MAE']:.4f}" if prophet_test_metrics['MAE'] is not None else "N/A",
+                f"{baseline_mae_lh:.4f}" if baseline_mae_lh is not None else "N/A",
+                f"{baseline_mae_lw:.4f}" if baseline_mae_lw is not None else "N/A"
+            ],
+            "RMSE": [
+                f"{prophet_test_metrics['RMSE']:.4f}" if prophet_test_metrics['RMSE'] is not None else "N/A",
+                f"{baseline_rmse_lh:.4f}" if baseline_rmse_lh is not None else "N/A",
+                f"{baseline_rmse_lw:.4f}" if baseline_rmse_lw is not None else "N/A"
+            ],
+            "Samples": [
+                prophet_test_metrics['n_samples'],
+                n_lh,
+                n_lw
+            ]
+        }
+        st.dataframe(comparison_data, use_container_width=True)
+        
+        st.divider()
+        st.markdown("**Prediction Sample**")
+        sample_data = (
+            filtered_plot_data.select(["timestamp_str", "actual", "y_pred_prophet", "y_pred_last_hour"])
+            .tail(20)
+            .to_dicts()
+        )
+        st.dataframe(sample_data, use_container_width=True)
+
+    with tab2:
+        st.subheader("Prediction vs Actual")
+        
+        chart_data = filtered_plot_data.to_dicts()
+
+        # Toggle for Confidence Intervals
+        show_ci = st.checkbox("Show Confidence Intervals (yhat_lower/upper)", value=True, key="prophet_show_ci")
+
+        if chart_data:
+            # Base layers
+            layers = []
+            
+            # Confidence Interval (Area) - Conditionally added
+            if show_ci:
+                layers.append({
+                    "mark": {"type": "area", "color": "#1f77b4", "opacity": 0.2},
+                    "encoding": {
+                        "y": {"field": "yhat_lower", "type": "quantitative"},
+                        "y2": {"field": "yhat_upper"}
+                    }
+                })
+            
+            # Lines with Legend (Folded)
+            layers.append({
+                "transform": [
+                    {"fold": ["actual", "y_pred_prophet", "y_pred_last_hour", "y_pred_last_week"], "as": ["Variable", "Value"]}
+                ],
+                "mark": "line",
+                "encoding": {
+                    "y": {"field": "Value", "type": "quantitative", "title": "Report Count"},
+                    "color": {
+                        "field": "Variable", 
+                        "type": "nominal",
+                        "scale": {
+                            "domain": ["actual", "y_pred_prophet", "y_pred_last_hour", "y_pred_last_week"],
+                            "range": ["#ff0303", "#1f77b4", "#ff7f0e", "#2ca02c"]
+                        },
+                        "legend": {"title": "Model / Series", "orient": "bottom"}
+                    },
+                    "strokeDash": {
+                        "field": "Variable",
+                        "scale": {
+                            "domain": ["actual", "y_pred_prophet", "y_pred_last_hour", "y_pred_last_week"],
+                            "range": [[1,0], [1,0], [5,5], [2,2]]
+                        }
+                    },
+                    "strokeWidth": {
+                        "condition": [
+                            {"test": "datum.Variable === 'y_pred_prophet'", "value": 3},
+                            {"test": "datum.Variable === 'actual'", "value": 2}
+                        ],
+                        "value": 1.5
+                    },
+                    "opacity": {
+                        "condition": {"test": "datum.Variable === 'actual'", "value": 0.6},
+                        "value": 1
+                    }
+                }
+            })
+
+            # Vega-Lite Spec with Fold for Legend
+            st.vega_lite_chart(
+                chart_data,
+                {
+                    "encoding": {"x": {"field": "timestamp_str", "type": "temporal", "title": "Time"}},
+                    "layer": layers,
+                    "width": "container",
+                    "height": 500
+                },
+                use_container_width=True
+            )
+
+    with tab3:
+        st.subheader("Forecast Components")
+        st.markdown("These components show the trends and periodic patterns detected by the model.")
+        
+        # Use filtered data based on date range instead of potentially crashing hour count
         forecast_components = get_forecast_components(
-            model, test_df.tail(hours_to_show), 
+            model, filtered_test_df, 
             ts_col=ts_col, y_col=y_col,
             inverse_log=log_used, add_lag1=add_lag1, 
             train_df_last_y=last_y_train
         )
         
-        # Trend component
-        st.markdown("**Trend Component**")
-        trend_data = pd.DataFrame({
-            'ds': forecast_components['ds'],
-            'trend': forecast_components['trend']
-        })
-        st.line_chart(trend_data.set_index('ds'))
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown("**Trend**")
+            st.line_chart(pd.DataFrame({'trend': forecast_components['trend']}).set_index(forecast_components['ds']))
         
-        # Weekly seasonality (if available)
+        with c2:
+            if 'daily' in forecast_components.columns:
+                st.markdown("**Daily Seasonality**")
+                st.line_chart(pd.DataFrame({'daily': forecast_components['daily']}).set_index(forecast_components['ds']))
+        
         if 'weekly' in forecast_components.columns:
+            st.divider()
             st.markdown("**Weekly Seasonality**")
-            weekly_data = pd.DataFrame({
-                'ds': forecast_components['ds'],
-                'weekly': forecast_components['weekly']
-            })
-            st.line_chart(weekly_data.set_index('ds'))
+            st.line_chart(pd.DataFrame({'weekly': forecast_components['weekly']}).set_index(forecast_components['ds']))
+
+    with tab4:
+        st.subheader("Residual Analysis & Diagnostics")
         
-        # Daily seasonality (if available)
-        if 'daily' in forecast_components.columns:
-            st.markdown("**Daily Seasonality**")
-            daily_data = pd.DataFrame({
-                'ds': forecast_components['ds'],
-                'daily': forecast_components['daily']
-            })
-            st.line_chart(daily_data.set_index('ds'))
-    
-    st.divider()
-    
-    # Residual analysis
-    st.subheader("Residual Analysis (Test Set)")
-    
-    residuals_df = plot_data.with_columns(
-        (pl.col("actual") - pl.col("y_pred_prophet")).alias("residual")
-    )
-    
-    c1, c2 = st.columns(2)
-    
-    with c1:
-        st.markdown("**Residuals over Time**")
-        st.vega_lite_chart(
-            residuals_df.select(["timestamp_str", "residual"]).to_dicts(),
-            {
-                "mark": {"type": "bar", "color": "#d62728"},
-                "encoding": {
-                    "x": {"field": "timestamp_str", "type": "temporal", "title": "Time"},
-                    "y": {"field": "residual", "type": "quantitative", "title": "Residual (Actual - Predicted)"}
+        rc1, rc2 = st.columns(2)
+        with rc1:
+            st.markdown("**Residuals over time**")
+            st.vega_lite_chart(
+                residuals_df.select(["timestamp_str", "residual"]).to_dicts(),
+                {
+                    "mark": {"type": "bar", "color": "#d62728"},
+                    "encoding": {
+                        "x": {"field": "timestamp_str", "type": "temporal", "title": "Time"},
+                        "y": {"field": "residual", "type": "quantitative", "title": "Error (Actual - predicted)"}
+                    },
+                    "width": "container",
+                    "height": 300
                 },
-                "width": "container",
-                "height": 300
-            },
-            use_container_width=True
-        )
-        
-    with c2:
-        st.markdown("**Error Distribution (Histogram)**")
-        st.vega_lite_chart(
-            residuals_df.select("residual").to_dicts(),
-            {
-                "mark": {"type": "bar", "color": "#9467bd"},
-                "encoding": {
-                    "x": {"bin": True, "field": "residual", "title": "Error Magnitude"},
-                    "y": {"aggregate": "count", "title": "Frequency"}
+                use_container_width=True
+            )
+        with rc2:
+            st.markdown("**Error Distribution**")
+            st.vega_lite_chart(
+                residuals_df.select("residual").to_dicts(),
+                {
+                    "mark": {"type": "bar", "color": "#9467bd"},
+                    "encoding": {
+                        "x": {"bin": True, "field": "residual", "title": "Error Magnitude"},
+                        "y": {"aggregate": "count", "title": "Frequency"}
+                    },
+                    "width": "container",
+                    "height": 300
                 },
-                "width": "container",
-                "height": 300
-            },
-            use_container_width=True
-        )
-    
-    st.divider()
-    
-    # Model Diagnostics
-    st.subheader("Model Diagnostics")
-    c1, c2 = st.columns(2)
-    
-    with c1:
-        st.markdown("**Changepoints Detected**")
-        # Extract changepoints from model
-        cp_dates = model.changepoints
-        st.write(f"Number of potential changepoints: {len(cp_dates)}")
-        st.write(f"Changepoint Prior Scale: {changepoint_prior_scale:.4f}")
-        
-    with c2:
-        st.markdown("**Seasonality Strength**")
-        st.write(f"Seasonality Prior Scale: {seasonality_prior_scale:.2f}")
-        st.write(f"Seasonality Mode: {seasonality_mode}")
-    
-    # Advanced Diagnostics
-    with st.expander("Advanced Diagnostics (Autocorrelation)"):
-        st.markdown("""
-        **Why is the baseline so strong?**
-        If the data has high **Autocorrelation at Lag 1**, it means the value at hour *t* is very similar 
-        to the value at hour *t-1*. This explains why the 'Last Hour' baseline is difficult to beat.
-        """)
-        
-        # Calculate ACF manually for lags 1-24
-        lags = list(range(1, 25))
-        acf_values = []
-        
-        y_values = plot_data.select("actual").to_series()
-        y_mean = y_values.mean()
-        y_var = y_values.var()
+                use_container_width=True
+            )
+            
+        st.divider()
+        st.subheader("Autocorrelation (ACF)")
+        st.markdown("Indicates how much the current value depends on past values. High correlation at Lag 1 explains why the baseline is hard to beat.")
         
         if y_var > 0:
-            for lag in lags:
-                # Eccnomic definition of ACF: cov(y_t, y_{t-lag}) / var(y)
-                # We use Polars shifts to align and calculate correlation
-                acf = plot_data.select([
-                    pl.corr(pl.col("actual"), pl.col("actual").shift(lag)).alias("acf")
-                ]).item()
-                acf_values.append({"lag": lag, "correlation": acf if acf is not None else 0.0})
-        
             st.vega_lite_chart(
                 acf_values,
                 {
@@ -536,19 +567,12 @@ def render_prophet_page(hourly_ts: pl.DataFrame):
                 },
                 use_container_width=True
             )
-        else:
-            st.warning("Variance is zero; cannot calculate autocorrelation.")
-
-    st.divider()
-    
-    # Data sample
-    st.subheader("Sample Predictions")
-    sample_data = (
-        plot_data.select(["timestamp_str", "actual", "y_pred_prophet", "y_pred_last_hour"])
-        .tail(50)
-        .to_dicts()
-    )
-    st.dataframe(sample_data, use_container_width=True)
+        
+        st.divider()
+        with st.expander("Model Details"):
+            st.write(f"Changepoints detected: {len(model.changepoints)}")
+            st.write(f"Changepoint Prior Scale: {changepoint_prior_scale:.4f}")
+            st.write(f"Seasonality Mode: {seasonality_mode}")
 
 
 # ----------------------------

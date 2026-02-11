@@ -1,5 +1,6 @@
 """
-Configuration module for IaaS Report Monitor application.
+Configuration module for Report Monitor
+ application.
 Handles environment variables and application settings.
 """
 import os

@@ -1,5 +1,6 @@
 """
-IaaS Report Monitor - Streamlit Application
+Report Monitor
+ - Streamlit Application
 Main application file orchestrating all components.
 """
 import streamlit as st
@@ -32,7 +33,11 @@ from components.anomaly_detection import render_anomaly_detection, render_drift_
 # ----------------------------
 # Page Configuration
 # ----------------------------
-st.set_page_config(page_title="IaaS Report Monitor", layout="wide", page_icon="📈")
+st.set_page_config(page_title="Report Monitor", layout="wide", page_icon="📈")
+
+# Inject Custom CSS
+with open("assets/styles.css") as f:
+    st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
 
 # ----------------------------
 # Main Application
@@ -62,23 +67,25 @@ try:
     # ----------------------------
     # Main Content
     # ----------------------------
-    st.title("Panel de Control: Optimizacion de Reportes IaaS")
+    st.title("Report Monitor")
     
-    # Health checks
-    render_health_checks(df_raw, df_filtered)
+    # Main dashboard
+    st.header("Overview")
     
-    # KPIs
+    # 1. KPIs
     render_kpis(df_filtered)
     
-    # Charts Section
-    st.divider()
-    c1, c2 = st.columns(2)
-    
-    with c1:
+    # 2. Charts
+    col1, col2 = st.columns(2)
+    with col1:
         render_execution_trends(df_filtered)
-    
-    with c2:
+    with col2:
         render_slowest_reports(df_filtered)
+        
+    render_duration_distribution(df_filtered, key="dist_top")
+    
+    # 3. Health Checks
+    render_health_checks(df_raw, df_filtered)
     
     # Top failures
     st.divider()
@@ -86,20 +93,18 @@ try:
     
     # Duration distribution
     st.divider()
-    render_duration_distribution(df_filtered)
+    render_duration_distribution(df_filtered, key="dist_bottom")
     
     # Hourly load and heatmap
     st.divider()
     render_hourly_load(df_filtered)
     render_heatmap(df_filtered)
     
-    # Anomaly detection
-    st.divider()
-    render_anomaly_detection(df_filtered)
-    
-    # Drift analysis
-    st.divider()
-    render_drift_analysis(df_filtered)
+    # Anomaly detection & Drift Analysis moved to pages/5_Anomaly_Detection.py
+    # st.divider()
+    # render_anomaly_detection(df_filtered)
+    # st.divider()
+    # render_drift_analysis(df_filtered)
 
 except Exception as e:
-    st.error(f"Error en la aplicacion: {e}")
+    st.error(f"Application error: {e}")

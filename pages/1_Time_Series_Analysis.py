@@ -22,6 +22,13 @@ from utils.data_processing import (
 # ----------------------------
 st.set_page_config(page_title="Time Series Analysis", layout="wide", page_icon="📊")
 
+# Inject Custom CSS
+try:
+    with open("assets/styles.css") as f:
+        st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
+except FileNotFoundError:
+    pass
+
 # ----------------------------
 # Main Content
 # ----------------------------
@@ -49,100 +56,93 @@ try:
     The data is prepared for forecasting analysis and anomaly detection.
     """)
     
-    # Summary metrics
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        st.metric("Total Hours", f"{hourly_ts.height:,}")
-    
-    with col2:
-        if hourly_ts.height > 0:
-            avg_count = hourly_ts.select(pl.col("report_count").mean()).item()
-            st.metric("Average Reports/hr", f"{avg_count:.2f}")
+    # Summary Metrics
+    st.markdown("### Summary Metrics")
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Total Hours", f"{hourly_ts.height}")
+    m2.metric("Total Count", f"{hourly_ts['report_count'].sum():,}")
+    m3.metric("Average/Hour", f"{hourly_ts['report_count'].mean():.2f}")
+    m4.metric("Max/Hour", f"{hourly_ts['report_count'].max()}")
             
-    with col3:
-        if hourly_ts.height > 0:
-            max_count = hourly_ts.select(pl.col("report_count").max()).item()
-            st.metric("Peak Reports/hr", f"{max_count:,}")
-            
-    with col4:
-        if hourly_ts.height > 0:
-            max_date = hourly_ts.select(pl.col("timestamp_hour").max()).item()
-            st.metric("Latest Data", max_date.strftime("%Y-%m-%d %H:%M"))
-    
     st.divider()
     
     # Main Time Series Chart
-    st.subheader("Report Count Over Time")
+    st.subheader("Hourly Execution Trend")
     
-    days_to_show = st.slider("Visualization Window (days)", min_value=1, max_value=60, value=14)
+    col_ctrl1, col_ctrl2 = st.columns([2, 1])
+    with col_ctrl1:
+        days_to_show = st.slider("Visualization Window (days)", min_value=1, max_value=60, value=14, key="slider_ts_window")
+    with col_ctrl2:
+        show_rolling = st.checkbox("Show Moving Average (24h)", value=True)
+    
     hours_to_show = int(days_to_show * 24)
     
-    plot_data = hourly_ts.tail(hours_to_show).with_columns(
+    # Calculate rolling if requested
+    plot_data = hourly_ts.tail(hours_to_show)
+    if show_rolling:
+        plot_data = plot_data.with_columns(
+            pl.col("report_count").rolling_mean(window_size=24).alias("rolling_mean")
+        )
+
+    plot_data = plot_data.with_columns(
         pl.col("timestamp_hour").dt.strftime("%Y-%m-%dT%H:%M:%S").alias("timestamp_str")
     )
     
-    st.vega_lite_chart(
-        plot_data.to_dicts(),
+    # Advanced Vega-Lite Chart
+    layers = [
+        # Base Area
         {
-            "mark": {"type": "area", "color": "#1f77b4", "opacity": 0.6},
+            "mark": {"type": "area", "color": "#1f77b4", "opacity": 0.4},
             "encoding": {
                 "x": {"field": "timestamp_str", "type": "temporal", "title": "Time"},
                 "y": {"field": "report_count", "type": "quantitative", "title": "Report Count"},
                 "tooltip": [
-                    {"field": "timestamp_str", "type": "temporal", "title": "Time"},
+                    {"field": "timestamp_str", "type": "temporal", "title": "Date/Time"},
                     {"field": "report_count", "type": "quantitative", "title": "Count"}
                 ]
-            },
+            }
+        }
+    ]
+    
+    if show_rolling:
+        layers.append({
+            "mark": {"type": "line", "color": "#ff7f0e", "strokeWidth": 2},
+            "encoding": {
+                "x": {"field": "timestamp_str", "type": "temporal"},
+                "y": {"field": "rolling_mean", "type": "quantitative"},
+                "tooltip": [
+                    {"field": "rolling_mean", "type": "quantitative", "title": "Moving Average (24h)"}
+                ]
+            }
+        })
+
+    st.vega_lite_chart(
+        plot_data.to_dicts(),
+        {
+            "layer": layers,
             "width": "container",
-            "height": 400
+            "height": 450
         },
         use_container_width=True
     )
     
+    # Data Inspector & Stats
     st.divider()
-    
-    # Detailed Data View
-    st.subheader("Data Inspector")
-    
-    col1, col2 = st.columns([1, 2])
-    with col1:
-        num_rows = st.number_input(
-            "Rows to show",
-            min_value=10,
-            max_value=1000,
-            value=48,
-            step=10
-        )
-    
-    st.dataframe(
-        hourly_ts.head(num_rows),
-        use_container_width=True,
-        height=300
-    )
-    
-    # Statistics Section
-    with st.expander("Descriptive Statistics"):
-        if hourly_ts.height > 0:
-            stats = hourly_ts.select([
-                pl.col("report_count").mean().alias("Mean"),
-                pl.col("report_count").median().alias("Median"),
-                pl.col("report_count").std().alias("Std Dev"),
-                pl.col("report_count").min().alias("Min"),
-                pl.col("report_count").max().alias("Max"),
-                pl.col("report_count").quantile(0.25).alias("Q1 (25%)"),
-                pl.col("report_count").quantile(0.75).alias("Q3 (75%)"),
-            ])
-            st.dataframe(stats, use_container_width=True)
-    
-    # Download option
-    st.divider()
-    csv_data = hourly_ts.write_csv()
+    c1, c2 = st.columns(2)
+    with c1:
+        st.subheader("Data Inspector")
+        st.dataframe(hourly_ts.tail(100).to_pandas(), use_container_width=True)
+    with c2:
+        st.subheader("Descriptive Statistics")
+        st.dataframe(hourly_ts.select("report_count").to_pandas().describe(), use_container_width=True)
+
+    # Download link
+    csv = hourly_ts.to_pandas().to_csv(index=False).encode('utf-8')
     st.download_button(
-        label="Download CSV Data",
-        data=csv_data,
-        file_name="hourly_time_series.csv",
-        mime="text/csv"
+        label="Download Hourly TS Data as CSV",
+        data=csv,
+        file_name="hourly_timeseries.csv",
+        mime="text/csv",
     )
 
 except Exception as e:

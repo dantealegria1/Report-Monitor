@@ -1,4 +1,5 @@
-# IaaS Report Monitor - Wiki Documentation
+# Report Monitor
+ - Wiki Documentation
 
 ## Table of Contents
 1. [Overview](#overview)
@@ -14,7 +15,7 @@
 
 ## Overview
 
-The **IaaS Report Monitor** is a Streamlit dashboard designed to monitor and optimize report execution performance in an Infrastructure-as-a-Service (IaaS) environment. It provides real-time insights into report execution times, failure rates, and performance anomalies.
+The **Report Monitor** is a Streamlit dashboard designed to monitor and optimize report execution performance in an Infrastructure-as-a-Service (IaaS) environment. It provides real-time insights into report execution times, failure rates, and performance anomalies.
 
 ### What Problems Does It Solve?
 
