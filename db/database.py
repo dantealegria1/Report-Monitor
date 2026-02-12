@@ -36,6 +36,8 @@ def load_reports_data():
             ELSE 'success'
         END AS execution_status,
         TRIM(r.ReportName) AS ReportName,
+        r.Id AS ReportId,
+        ra.Parameters,
         TRIM(q.ReportType) AS ReportType
     FROM reportsdata ra
     JOIN reports r ON ra.ReportId = r.Id

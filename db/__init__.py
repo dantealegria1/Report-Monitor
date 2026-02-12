@@ -1,1 +1,2 @@
-"""Database module for IaaS Report Monitor."""
+"""Database module for Report Monitor
+."""
