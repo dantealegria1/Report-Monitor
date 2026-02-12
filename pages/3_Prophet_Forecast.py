@@ -14,8 +14,10 @@ from utils.prophet_forecast import (
     train_prophet_model,
     generate_prophet_predictions,
     compute_metrics,
-    get_forecast_components
+    get_forecast_components,
+    compute_mase
 )
+from components.kpis import render_mase_kpi
 
 # Baseline utilities for comparison
 from utils.baseline import add_naive_predictions
@@ -380,6 +382,41 @@ def render_prophet_page(hourly_ts: pl.DataFrame):
                     help="Test MAE / Train MAE. Values > 1.5x suggest overfitting."
                 )
 
+        # MASE Metric Section
+        st.divider()
+        st.markdown("### Model Validation: MASE Analysis")
+        
+        # 1. Calculate both MASE values
+        mase_24 = compute_mase(
+            training_df=train_df, test_df=test_df, predictions=test_predictions,
+            y_col=y_col, pred_col="y_pred_prophet", ts_col=ts_col, m=24
+        )
+        
+        mase_168 = compute_mase(
+            training_df=train_df, test_df=test_df, predictions=test_predictions,
+            y_col=y_col, pred_col="y_pred_prophet", ts_col=ts_col, m=168
+        )
+        
+        # 2. Layout with Metrics and Info
+        col_metrics, col_info = st.columns([1, 2])
+        
+        with col_metrics:
+            st.write("**Daily Benchmark (24h)**")
+            render_mase_kpi(mase_24) # Ensure this function handles the logic we discussed
+            
+            st.write("**Weekly Benchmark (168h)**")
+            render_mase_kpi(mase_168)
+            
+        with col_info:
+            st.info(
+                "**Why two MASE values?**\n\n"
+                "IaaS workloads follow a dual-seasonality pattern. We validate the model against two 'Naive' baselines:\n"
+                "* **Daily ($m=24$):** Compares prediction vs. the same hour yesterday. Tests if the model understands the 24h cycle.\n"
+                "* **Weekly ($m=168$):** Compares prediction vs. the same hour last week. Tests if the model captures weekend vs. weekday shifts.\n\n"
+                "**Interpretation:**\n"
+                "* **MASE < 1.0**: Your Prophet model is more accurate than simple repetition. This justifies the infrastructure costs of running an AI model.\n"
+                "* **Comparison**: If MASE 168 < MASE 24, your model is particularly strong at capturing weekly business cycles."
+            )
         st.divider()
         st.markdown("**Comparison Table (Test Set)**")
         comparison_data = {

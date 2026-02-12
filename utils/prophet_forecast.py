@@ -249,5 +249,67 @@ def get_forecast_components(
     
     # Generate full forecast with components
     forecast = model.predict(future)
-    
     return forecast
+
+
+def compute_mase(
+    training_df: pl.DataFrame,
+    test_df: pl.DataFrame,
+    predictions: pl.DataFrame,
+    y_col: str = "report_count",
+    pred_col: str = "y_pred_prophet",
+    ts_col: str = "timestamp_hour",
+    m: int = 24
+) -> float | None:
+    """
+    Calculate Mean Absolute Scaled Error (MASE).
+    
+    MASE = MAE_model / MAE_naive_seasonal
+    
+    where MAE_naive_seasonal is calculated on the *training* set.
+    
+    Args:
+        training_df: Training data (used for denominator)
+        test_df: Test data (used for numerator)
+        predictions: Model predictions for test data
+        y_col: Name of target column
+        pred_col: Name of prediction column
+        ts_col: Name of timestamp column
+        m: Seasonality period (default 24 for daily hourly data)
+        
+    Returns:
+        MASE value (float) or None if calculation fails
+    """
+    # 1. Calculate MAE of the model on Test set
+    model_mae_dict = compute_metrics(test_df, predictions, y_col, pred_col, ts_col)
+    mae_model = model_mae_dict["MAE"]
+    
+    if mae_model is None:
+        return None
+
+    # 2. Calculate Mean Absolute Error of Seasonal Naive on Training set
+    # Using Polars for efficiency
+    
+    # We need to shift by 'm' periods. 
+    # Since data is likely sorted by time, we can use shift(m).
+    # But we must ensure it is sorted.
+    
+    train_sorted = training_df.sort(ts_col)
+    y_train = train_sorted.select(pl.col(y_col)).to_series()
+    
+    if len(y_train) <= m:
+        return None  # Not enough data for seasonal differencing
+        
+    # Calculate seasonal naive errors: |Y_t - Y_{t-m}|
+    # We drop the first m values where the difference is undefined (null)
+    naive_errors = (y_train - y_train.shift(m)).abs().drop_nulls()
+    
+    mae_naive = naive_errors.mean()
+    
+    if mae_naive == 0 or mae_naive is None:
+        return None # Avoid division by zero
+        
+    # 3. Calculate MASE
+    mase = mae_model / mae_naive
+    
+    return float(mase)
