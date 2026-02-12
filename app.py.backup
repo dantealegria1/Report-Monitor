@@ -9,7 +9,8 @@ from datetime import datetime, date
 # ----------------------------
 # Configuracion de la pagina
 # ----------------------------
-st.set_page_config(page_title="IaaS Report Monitor", layout="wide")
+st.set_page_config(page_title="Report Monitor
+", layout="wide")
 load_dotenv()
 
 # ----------------------------

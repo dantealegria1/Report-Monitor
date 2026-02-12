@@ -21,17 +21,17 @@ def render_sidebar_filters(df: pl.DataFrame) -> dict:
         - statuses: list of selected statuses
         - report_names: list of selected report names
     """
-    st.sidebar.title("Filtros de Analisis")
+    st.sidebar.title("Analysis Filters")
     
     # Date filter
     min_date = df["date"].min()
     max_date = df["date"].max()
-    date_selection = st.sidebar.date_input("Rango de Fechas", [min_date, max_date])
+    date_selection = st.sidebar.date_input("Date Range", [min_date, max_date])
     
     # Report type filter
     report_types = sorted(df["ReportType"].unique().to_list())
     selected_types = st.sidebar.multiselect(
-        "Tipos de Reporte",
+        "Report Types",
         report_types,
         default=report_types
     )
@@ -39,7 +39,7 @@ def render_sidebar_filters(df: pl.DataFrame) -> dict:
     # Status filter
     status_list = ["success", "failed", "cancelled"]
     selected_status = st.sidebar.multiselect(
-        "Estatus",
+        "Status",
         status_list,
         default=status_list
     )
@@ -53,7 +53,7 @@ def render_sidebar_filters(df: pl.DataFrame) -> dict:
         .to_list()
     )
     selected_names = st.sidebar.multiselect(
-        f"Reportes (Top {TOP_REPORTS_LIMIT} por volumen)",
+        f"Reports (Top {TOP_REPORTS_LIMIT} by volume)",
         top_names,
         default=[]
     )

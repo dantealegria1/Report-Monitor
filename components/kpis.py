@@ -23,9 +23,9 @@ def render_kpis(df_filtered: pl.DataFrame):
     avg_dur = float(df_success["duration_seconds"].mean()) if df_success.height > 0 else 0.0
     fail_rate = (df_failed.height / total_execs * 100) if total_execs > 0 else 0.0
     
-    kpi1.metric("Total Ejecuciones", f"{total_execs:,}")
-    kpi2.metric("Duracion Promedio (success)", f"{avg_dur:.2f}s")
-    kpi3.metric("Tasa de Fallos", f"{fail_rate:.1f}%", delta_color="inverse")
+    kpi1.metric("Total Executions", f"{total_execs:,}")
+    kpi2.metric("Average Duration (success)", f"{avg_dur:.2f}s")
+    kpi3.metric("Failure Rate", f"{fail_rate:.1f}%", delta_color="inverse")
     
     # Variability: median of MADs (robust measure)
     if df_success.height > 0:
@@ -34,9 +34,9 @@ def render_kpis(df_filtered: pl.DataFrame):
             (pl.col("duration_seconds") - pl.col("duration_seconds").median()).abs().median().alias("MAD")
         ])
         mad_global = float(df_mad["MAD"].median()) if df_mad.height > 0 else 0.0
-        kpi4.metric("Variabilidad (MAD mediana)", f"{mad_global:.2f}s")
+        kpi4.metric("Variability (median MAD)", f"{mad_global:.2f}s")
     else:
-        kpi4.metric("Variabilidad (MAD mediana)", "N/A")
+        kpi4.metric("Variability (median MAD)", "N/A")
 
 
 def render_health_checks(df_raw: pl.DataFrame, df_filtered: pl.DataFrame):
@@ -47,18 +47,18 @@ def render_health_checks(df_raw: pl.DataFrame, df_filtered: pl.DataFrame):
         df_raw: Raw unfiltered DataFrame
         df_filtered: Filtered DataFrame
     """
-    with st.expander("Calidad de datos / Health checks", expanded=False):
+    with st.expander("Data Quality / Health Checks", expanded=False):
         if df_filtered.height == 0:
-            st.info("No hay datos con los filtros actuales.")
+            st.info("No data available with current filters.")
         else:
             # Null counts per column
             nulls = df_raw.select([
                 pl.all().null_count().name.suffix("_nulls")
             ]).to_pandas().T.reset_index()
-            nulls.columns = ["columna", "nulos"]
+            nulls.columns = ["column", "nulls"]
             
             last_ts = df_filtered["started_at"].max()
             first_ts = df_filtered["started_at"].min()
-            st.write(f"**Ventana actual:** {first_ts}  →  {last_ts}")
+            st.write(f"**Current Window:** {first_ts}  to  {last_ts}")
             
             st.dataframe(nulls, use_container_width=True)

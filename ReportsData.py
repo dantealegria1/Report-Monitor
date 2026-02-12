@@ -26,6 +26,8 @@ def run_etl_process(start_date=None, end_date=None):
             ELSE 'success'
         END AS execution_status,
         TRIM(r.ReportName) AS ReportName,
+        r.Id AS ReportId,
+        ra.Parameters,
         TRIM(q.ReportType) AS ReportType
     FROM reportsdata ra
     JOIN reports r ON ra.ReportId = r.Id
@@ -100,12 +102,45 @@ def run_etl_process(start_date=None, end_date=None):
         (pl.col("ok") / pl.col("total") * 100).alias("success_rate")
     ).write_csv("pbi_eficiencia_tipo.csv")
 
-    # 6. Deteccion de Anomalias (Z-Score)
-    # Implementacion segun avance de solucion en pagina 31
-    df.with_columns([
-        ((pl.col("duration_seconds") - pl.col("duration_seconds").mean().over("ReportName")) / 
-         pl.col("duration_seconds").std().over("ReportName")).alias("z_score")
-    ]).filter(pl.col("z_score") > 3).write_csv("pbi_excepciones_criticas.csv")
+    # 6. Deteccion de Anomalias (Z-Score Robusto - MAD)
+    # Implementacion metodologica Semana 3
+    print("Calculando umbrales estadisticos robustos...")
+    
+    # Calcular Mediana y MAD por ReportName y Hora (Contexto)
+    df_stats = df_success.group_by(["ReportName", "hour"]).agg([
+        pl.col("duration_seconds").median().alias("median_dur"),
+        (pl.col("duration_seconds") - pl.col("duration_seconds").median()).abs().median().alias("mad_dur")
+    ])
+
+    # Rellenar MAD=0 con un valor minimo (epsilon) para evitar division por cero
+    # Si MAD es 0, usamos la media de MADs globales o un valor pequeño como 0.1s
+    mean_mad = df_stats.select(pl.col("mad_dur").mean()).item() or 1.0
+    df_stats = df_stats.with_columns(
+        pl.when(pl.col("mad_dur") == 0)
+        .then(pl.lit(mean_mad if mean_mad > 0 else 1.0)) # Fallback
+        .otherwise(pl.col("mad_dur"))
+        .alias("mad_dur_adj")
+    )
+    
+    # Exportar Umbrales Formales
+    df_stats.select([
+        "ReportName", "hour", "median_dur", "mad_dur_adj"
+    ]).write_csv("pbi_umbrales_estadisticos.csv")
+
+    # Calcular Z-Score Robusto Modificado: 0.6745 * (x - median) / MAD
+    # Nota: 0.6745 es la constante de consistencia para distribucion normal
+    k = 0.6745
+    
+    df_with_stats = df.join(df_stats, on=["ReportName", "hour"], how="left")
+    
+    df_anomalias = df_with_stats.with_columns([
+        (k * (pl.col("duration_seconds") - pl.col("median_dur")).abs() / pl.col("mad_dur_adj")).alias("robust_z_score")
+    ]).filter(pl.col("robust_z_score") > 3.5) # Umbral conservador de 3.5
+    
+    df_anomalias.select([
+        "started_at", "ReportName", "ReportType", "duration_seconds", 
+        "median_dur", "mad_dur_adj", "robust_z_score", "execution_status"
+    ]).write_csv("pbi_excepciones_criticas.csv")
 
     print("Proceso completado. Archivos CSV generados para Power BI.")
 
