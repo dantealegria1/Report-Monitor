@@ -20,7 +20,7 @@ from utils.data_processing import (
 # ----------------------------
 # Page Configuration
 # ----------------------------
-st.set_page_config(page_title="Time Series Analysis", layout="wide", page_icon="📊")
+st.set_page_config(page_title="Time Series Analysis", layout="wide")
 
 # Inject Custom CSS
 try:
@@ -46,6 +46,14 @@ try:
     
     # Create hourly time series
     hourly_ts = build_hourly_report_count(df)
+    
+    # Enrich with features for Model Backtesting (Backlog, Lags, etc.)
+    from utils.data_processing import enrich_hourly_ts_with_features
+    with st.spinner("Enriching time series with operational variables..."):
+        hourly_ts = enrich_hourly_ts_with_features(hourly_ts, df_raw)
+    
+    # Store in session state for other pages
+    st.session_state["hourly_ts"] = hourly_ts
     
     # ----------------------------
     # Display Time Series Data
@@ -131,7 +139,7 @@ try:
     c1, c2 = st.columns(2)
     with c1:
         st.subheader("Data Inspector")
-        st.dataframe(hourly_ts.tail(100).to_pandas(), use_container_width=True)
+        st.dataframe(hourly_ts.tail(100).to_pandas(), width='stretch')
     with c2:
         st.subheader("Descriptive Statistics")
         st.dataframe(hourly_ts.select("report_count").to_pandas().describe(), use_container_width=True)

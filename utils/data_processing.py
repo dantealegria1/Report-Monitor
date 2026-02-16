@@ -139,3 +139,66 @@ def build_hourly_report_count(df: pl.DataFrame) -> pl.DataFrame:
     )
 
     return hourly_filled
+
+
+def enrich_hourly_ts_with_features(hourly_ts: pl.DataFrame, df_raw: pl.DataFrame) -> pl.DataFrame:
+    """
+    Enrich hourly time series with operational and seasonal features for modeling.
+    Optimized version using pure Polars event-based logic for backlog calculation.
+    """
+    # Use temporary names for internal logic that matches trainer.py
+    df = hourly_ts.rename({'timestamp_hour': 'ds', 'report_count': 'y'})
+    
+    # 1. Time-based features
+    df = df.with_columns([
+        pl.col("ds").dt.hour().alias("hour"),
+        pl.col("ds").dt.weekday().alias("weekday"),
+        pl.col("ds").dt.day().alias("day_of_month"),
+        pl.col("ds").dt.month().alias("month"),
+        pl.col("ds").dt.is_leap_year().cast(pl.Int64).alias("is_leap"), # Placeholder for logic if needed
+        # Weekday 5 and 6 are Saturday and Sunday
+        (pl.col("ds").dt.weekday() >= 6).cast(pl.Int64).alias("is_weekend")
+    ])
+    
+    # 2. Argentina Holidays (Using Python holidays library inside Polars map_elements for precision)
+    import holidays
+    ar_holidays = holidays.CountryHoliday('AR')
+    df = df.with_columns(
+        pl.col("ds").map_elements(lambda x: 1 if x.date() in ar_holidays else 0, return_dtype=pl.Int64).alias("is_holiday")
+    )
+    
+    # is_month_end check
+    # Polars uses .dt.offset_by for temporal offsets
+    df = df.with_columns(
+        (pl.col("ds").dt.month() != pl.col("ds").dt.offset_by("1d").dt.month()).cast(pl.Int64).alias("is_month_end")
+    )
+
+    # 3. Memory Features (Lags & Rolling)
+    df = df.with_columns([
+        pl.col("y").shift(1).fill_null(0).alias("y_lag_1"),
+        pl.col("y").shift(2).fill_null(0).alias("y_lag_2"),
+        pl.col("y").shift(1).rolling_mean(window_size=3).fill_null(0).alias("y_rolling_mean_3")
+    ])
+    
+    # 4. Optimized Backlog Calculation (Event-based cum_sum)
+    # We define an event: +1 for creation, -1 for start processing
+    creations = df_raw.select(pl.col("creation_date").alias("time"), pl.lit(1).alias("change"))
+    starts = df_raw.select(pl.col("started_at").alias("time"), pl.lit(-1).alias("change"))
+    
+    events = pl.concat([creations, starts]).sort("time")
+    backlog_history = events.with_columns(
+        pl.col("change").cum_sum().alias("backlog")
+    ).select(["time", "backlog"])
+    
+    # Map backlog to hourly timestamps using backward asof join
+    df = df.join_asof(
+        backlog_history,
+        left_on="ds",
+        right_on="time",
+        strategy="backward"
+    ).fill_null(0).drop("time")
+    
+    df = df.with_columns(pl.lit(0).alias("tipo_reporte_id"))
+    
+    # Return with original column names
+    return df.rename({'ds': 'timestamp_hour', 'y': 'report_count'})

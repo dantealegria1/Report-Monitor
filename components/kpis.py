@@ -96,7 +96,7 @@ def render_mase_kpi(mase: float | None):
         st.metric(
             label="MASE",
             value=f"{mase:.2f}",
-            delta="Similar al Baseline",
+            delta="Similar to Baseline",
             delta_color="off"
         )
     else:

@@ -227,8 +227,8 @@ def render_baseline_page(hourly_ts: pl.DataFrame):
                 },
                 "height": 300
             },
-            use_container_width=True
-        )
+                width='stretch'
+            )
         
     with c_res2:
         st.markdown("**Error Distribution**")
@@ -243,15 +243,15 @@ def render_baseline_page(hourly_ts: pl.DataFrame):
                 "width": "container",
                 "height": 300
             },
-            use_container_width=True
-        )
+                width='stretch'
+            )
 
     st.divider()
     st.subheader("Sample Data")
     st.dataframe(
         tail_plot.select(["timestamp_str", "actual", "y_pred_last_hour", "y_pred_last_week"])
         .tail(50),
-        use_container_width=True
+        width='stretch'
     )
 
 

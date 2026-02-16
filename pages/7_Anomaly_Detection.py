@@ -8,13 +8,13 @@ from utils.data_processing import (
 from components.filters import render_sidebar_filters, apply_filters
 from components.anomaly_detection import render_anomaly_detection, render_drift_analysis
 
-st.set_page_config(page_title="Anomaly Detection", layout="wide", page_icon="🚨")
+st.set_page_config(page_title="Anomaly Detection", layout="wide")
 
 # Inject Custom CSS
 with open("assets/styles.css") as f:
     st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
 
-st.title("🚨 Anomaly Detection & Forensics")
+st.title("Anomaly Detection & Forensics")
 
 # Load Data
 df_raw = load_reports_data()
@@ -89,5 +89,5 @@ with tab3:
                  "width": "container",
                  "height": 400
              },
-             use_container_width=True
+             width='stretch'
         )

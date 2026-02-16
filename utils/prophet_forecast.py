@@ -259,14 +259,15 @@ def compute_mase(
     y_col: str = "report_count",
     pred_col: str = "y_pred_prophet",
     ts_col: str = "timestamp_hour",
-    m: int = 24
+    m: int = 1
 ) -> float | None:
     """
     Calculate Mean Absolute Scaled Error (MASE).
     
-    MASE = MAE_model / MAE_naive_seasonal
+    MASE = MAE_model / MAE_naive
     
-    where MAE_naive_seasonal is calculated on the *training* set.
+    where MAE_naive is calculated on the *training* set using one-step naive:
+    MAE_naive = mean(|Y_t - Y_{t-m}|) for t=m+1 to T.
     
     Args:
         training_df: Training data (used for denominator)
@@ -275,10 +276,10 @@ def compute_mase(
         y_col: Name of target column
         pred_col: Name of prediction column
         ts_col: Name of timestamp column
-        m: Seasonality period (default 24 for daily hourly data)
+        m: Periodicity (default 1 for non-seasonal Naive as per thesis requirement)
         
     Returns:
-        MASE value (float) or None if calculation fails
+        MASE value (float). MASE < 1 indicates model is better than Naive.
     """
     # 1. Calculate MAE of the model on Test set
     model_mae_dict = compute_metrics(test_df, predictions, y_col, pred_col, ts_col)
@@ -287,29 +288,53 @@ def compute_mase(
     if mae_model is None:
         return None
 
-    # 2. Calculate Mean Absolute Error of Seasonal Naive on Training set
-    # Using Polars for efficiency
-    
-    # We need to shift by 'm' periods. 
-    # Since data is likely sorted by time, we can use shift(m).
-    # But we must ensure it is sorted.
-    
+    # 2. Calculate Mean Absolute Error of Naive on Training set
     train_sorted = training_df.sort(ts_col)
     y_train = train_sorted.select(pl.col(y_col)).to_series()
     
     if len(y_train) <= m:
-        return None  # Not enough data for seasonal differencing
+        return None
         
-    # Calculate seasonal naive errors: |Y_t - Y_{t-m}|
-    # We drop the first m values where the difference is undefined (null)
+    # Naive errors: |Y_t - Y_{t-m}|
     naive_errors = (y_train - y_train.shift(m)).abs().drop_nulls()
-    
     mae_naive = naive_errors.mean()
     
     if mae_naive == 0 or mae_naive is None:
-        return None # Avoid division by zero
+        return None
         
     # 3. Calculate MASE
     mase = mae_model / mae_naive
     
     return float(mase)
+
+
+from prophet.diagnostics import cross_validation, performance_metrics
+
+def run_prophet_backtesting(
+    model: Prophet,
+    initial: str = '730 days',
+    period: str = '30 days',
+    horizon: str = '365 days',
+    parallel: str = None
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Run rolling window cross-validation for Prophet model.
+    
+    Args:
+        model: Trained Prophet model
+        initial: Size of the initial training period (e.g., '180 days')
+        period: Spacing between cutoff dates (e.g., '30 days')
+        horizon: Forecast horizon for each window (e.g., '15 days')
+        
+    Returns:
+        Tuple of (cv_results_df, cv_metrics_df) as Pandas DataFrames
+    """
+    df_cv = cross_validation(
+        model, 
+        initial=initial, 
+        period=period, 
+        horizon=horizon, 
+        parallel=parallel
+    )
+    df_p = performance_metrics(df_cv)
+    return df_cv, df_p

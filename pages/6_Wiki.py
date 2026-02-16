@@ -5,7 +5,7 @@ Provides detailed documentation for the Report Monitor
 """
 import streamlit as st
 
-st.set_page_config(page_title="Wiki & Documentation", layout="wide", page_icon="📖")
+st.set_page_config(page_title="Wiki & Documentation", layout="wide")
 
 # Inject Custom CSS
 try:
@@ -14,7 +14,7 @@ try:
 except FileNotFoundError:
     pass
 
-st.title("📖 Wiki & Documentation")
+st.title("Wiki & Documentation")
 st.markdown("Welcome to the Report Monitor knowledge base. Below is the complete documentation.")
 
 # Create tabs for organized viewing

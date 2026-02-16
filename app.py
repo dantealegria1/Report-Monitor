@@ -33,7 +33,7 @@ from components.anomaly_detection import render_anomaly_detection, render_drift_
 # ----------------------------
 # Page Configuration
 # ----------------------------
-st.set_page_config(page_title="Report Monitor", layout="wide", page_icon="📈")
+st.set_page_config(page_title="Report Monitor", layout="wide")
 
 # Inject Custom CSS
 with open("assets/styles.css") as f:
