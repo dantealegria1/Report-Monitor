@@ -26,7 +26,8 @@ from components.charts import (
     render_top_failures,
     render_duration_distribution,
     render_hourly_load,
-    render_heatmap
+    render_heatmap,
+    render_double_run_detection
 )
 from components.anomaly_detection import render_anomaly_detection, render_drift_analysis
 
@@ -52,7 +53,7 @@ try:
     df = quality_sanitize(df)
     
     # Day 1: freeze analysis window (A -> B)
-    df = filter_by_date_range(df, "2024-01-01", "2025-12-31")
+    df = filter_by_date_range(df, "2025-01-01", "2025-12-31")
     
     # Day 1: create hourly time series (available in Time Series Analysis page)
     hourly_ts = build_hourly_report_count(df)
@@ -99,7 +100,11 @@ try:
     st.divider()
     render_hourly_load(df_filtered)
     render_heatmap(df_filtered)
-    
+
+    # Double-Run Detection
+    st.divider()
+    render_double_run_detection(df_filtered)
+
     # Anomaly detection & Drift Analysis moved to pages/5_Anomaly_Detection.py
     # st.divider()
     # render_anomaly_detection(df_filtered)

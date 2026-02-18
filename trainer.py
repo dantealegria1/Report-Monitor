@@ -99,8 +99,11 @@ def train_hybrid_model(df):
     features = [
         'backlog', 'hour', 'weekday', 'day_of_month', 'month',
         'is_month_end', 'is_holiday', 'is_weekend', 'tipo_reporte_id',
-        'y_lag_1', 'y_lag_2', 'y_rolling_mean_3'
+        'y_lag_1', 'y_lag_2', 'y_rolling_mean_3',
+        'avg_param_span_days',  # date-range span extracted from Parameters
     ]
+    # Only keep features that exist in the dataframe (graceful fallback)
+    features = [f for f in features if f in df.columns]
     
     X = df[features]
     y_res = df['residual']
@@ -180,9 +183,44 @@ def evaluate_and_report(df):
     print(f"Reducción de Error (RMSE) Prophet vs Híbrido: {((rmse_p-rmse_h)/rmse_p)*100:.2f}%")
     print("="*65)
 
+import pyodbc
+from db.database import get_connection_string
+
+def load_latest_data_from_db(output_csv="DatosQuery.csv"):
+    """
+    Reads the SQL query from file, removes TOP limits, executes it against the database,
+    and initializes the CSV for training.
+    """
+    print(f"🔌 Conectando a la base de datos para actualizar {output_csv}...")
+    
+    try:
+        with open("Query_ReportsData.sql", "r") as f:
+            query = f.read()
+            
+        # Remove any TOP limits to get full training history
+        # (The SQL file might have TOP 10 for quick testing)
+        query = query.replace("TOP (10)", "").replace("TOP 10", "")
+        
+        conn_str = get_connection_string()
+        with pyodbc.connect(conn_str) as conn:
+            # Use pandas for easy CSV export
+            df_sql = pd.read_sql(query, conn)
+            
+        df_sql.to_csv(output_csv, index=False)
+        print(f"✅ Datos actualizados: {len(df_sql)} registros guardados en {output_csv}")
+        return True
+    except Exception as e:
+        print(f"❌ Error al actualizar datos desde BD: {e}")
+        print("⚠️ Se intentará usar el archivo CSV existente...")
+        return False
+
 if __name__ == "__main__":
     DATA_PATH = "DatosQuery.csv"
-    # Ajusta tu rango aquí
+    
+    # 1. Refresh Data
+    load_latest_data_from_db(DATA_PATH)
+    
+    # 2. Prepare & Train
     df_final = prepare_hybrid_data(DATA_PATH, start_date="2025-01-01", end_date="2026-01-19")
     _, _, df_trained = train_hybrid_model(df_final)
     evaluate_and_report(df_trained)

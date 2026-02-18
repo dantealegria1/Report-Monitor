@@ -7,6 +7,7 @@ Day 1 additions:
 - build_hourly_report_count(): create hourly time series with missing hours filled as 0
 """
 import polars as pl
+import re
 from config import MAX_DURATION_HOURS
 
 
@@ -200,5 +201,99 @@ def enrich_hourly_ts_with_features(hourly_ts: pl.DataFrame, df_raw: pl.DataFrame
     
     df = df.with_columns(pl.lit(0).alias("tipo_reporte_id"))
     
+    # 5. Parameter date-span feature
+    if "avg_param_span_days" in df.columns:
+        pass  # already enriched
+    else:
+        param_spans = extract_param_date_span(df_raw)
+        if param_spans.height > 0:
+            df = df.join_asof(
+                param_spans.sort("timestamp_hour"),
+                left_on="ds",
+                right_on="timestamp_hour",
+                strategy="backward"
+            ).with_columns(
+                pl.col("avg_param_span_days").fill_null(0)
+            )
+        else:
+            df = df.with_columns(pl.lit(0.0).alias("avg_param_span_days"))
+
     # Return with original column names
     return df.rename({'ds': 'timestamp_hour', 'y': 'report_count'})
+
+
+def extract_param_date_span(df_raw: pl.DataFrame) -> pl.DataFrame:
+    """
+    Parse the Parameters column to extract start/end date spans.
+    Handles XML, JSON, and query-string formats via regex.
+
+    Returns a DataFrame with columns:
+      - timestamp_hour (Datetime): truncated to the hour of started_at
+      - avg_param_span_days (Float64): mean date-range span for that hour
+    """
+    if "Parameters" not in df_raw.columns or "started_at" not in df_raw.columns:
+        return pl.DataFrame({
+            "timestamp_hour": pl.Series([], dtype=pl.Datetime),
+            "avg_param_span_days": pl.Series([], dtype=pl.Float64),
+        })
+
+    # Regex that captures date-like values after common key names
+    # Handles: XML <StartDate>2024-01-01</StartDate>
+    #          JSON "startDate":"2024-01-01"
+    #          QS   startDate=2024-01-01
+    DATE_RE = re.compile(
+        r'(?:start(?:date|Date|_date)|fecha(?:inicio|Inicio))[":\s=>]*'
+        r'([\"\']?)'
+        r'(\d{4}-\d{2}-\d{2})'
+        r'["\'>]?',
+        re.IGNORECASE,
+    )
+    END_RE = re.compile(
+        r'(?:end(?:date|Date|_date)|fecha(?:fin|Fin))[":\s=>]*'
+        r'(["\']?)'
+        r'(\d{4}-\d{2}-\d{2})'
+        r'["\'>]?',
+        re.IGNORECASE,
+    )
+
+    import pandas as pd
+
+    params_pd = df_raw.select([
+        pl.col("started_at").cast(pl.Datetime, strict=False),
+        pl.col("Parameters").cast(pl.Utf8, strict=False),
+    ]).to_pandas()
+
+    spans = []
+    for _, row in params_pd.iterrows():
+        raw = row["Parameters"]
+        if not raw or not isinstance(raw, str):
+            continue
+        sm = DATE_RE.search(raw)
+        em = END_RE.search(raw)
+        if sm and em:
+            try:
+                start_d = pd.to_datetime(sm.group(2))
+                end_d   = pd.to_datetime(em.group(2))
+                span    = (end_d - start_d).days
+                if 0 <= span <= 3650:  # sanity: 0 to 10 years
+                    spans.append({"started_at": row["started_at"], "span_days": float(span)})
+            except Exception:
+                pass
+
+    if not spans:
+        return pl.DataFrame({
+            "timestamp_hour": pl.Series([], dtype=pl.Datetime),
+            "avg_param_span_days": pl.Series([], dtype=pl.Float64),
+        })
+
+    spans_df = pl.DataFrame(spans).with_columns(
+        pl.col("started_at").cast(pl.Datetime, strict=False).dt.truncate("1h").alias("timestamp_hour")
+    )
+
+    return (
+        spans_df
+        .group_by("timestamp_hour")
+        .agg(pl.col("span_days").mean().alias("avg_param_span_days"))
+        .sort("timestamp_hour")
+    )
+
