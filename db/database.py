@@ -38,6 +38,7 @@ def load_reports_data():
         END AS execution_status,
         TRIM(r.ReportName) AS ReportName,
         r.Id AS ReportId,
+        CAST(r.[File] AS NVARCHAR(255)) AS ControllerActionOrSP,
         ra.Parameters,
         TRIM(q.ReportType) AS ReportType
     FROM reportsdata ra

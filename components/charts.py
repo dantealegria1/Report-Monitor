@@ -280,15 +280,19 @@ def render_heatmap(df_filtered: pl.DataFrame):
         st.info("No data available for heatmap.")
 
 
-def render_double_run_detection(df_filtered: pl.DataFrame):
+from components.filters import apply_filters
+
+def render_double_run_detection(df: pl.DataFrame, filters: dict):
     """
     Detect 'double-run' events: same report triggered multiple times within
     a short time window, suggesting users are re-running the same report.
 
     Args:
-        df_filtered: Filtered DataFrame with at least [ReportName, started_at, Parameters]
+        df: Base DataFrame (unfiltered by status, potentially)
+        filters: Current sidebar filters
     """
     import plotly.graph_objects as go
+    import copy
 
     st.subheader("Double-Run Detection")
     st.caption(
@@ -296,7 +300,7 @@ def render_double_run_detection(df_filtered: pl.DataFrame):
         "within a short time window — a sign of impatient re-runs."
     )
 
-    col_cfg1, col_cfg2 = st.columns([2, 1])
+    col_cfg1, col_cfg2, col_cfg3 = st.columns([2, 1, 1])
     with col_cfg1:
         threshold_sec = st.slider(
             "Time window (seconds)",
@@ -311,6 +315,26 @@ def render_double_run_detection(df_filtered: pl.DataFrame):
             key="double_run_match_params",
             help="When checked, only flag pairs that share the same Parameters value."
         )
+    with col_cfg3:
+        include_cancelled = st.checkbox(
+            "Include 'Cancelled'",
+            value=False,
+            key="double_run_include_cancelled",
+            help="If checked, includes cancelled reports even if filtered out globally."
+        )
+
+    # Prepare local filters
+    local_filters = copy.deepcopy(filters)
+    
+    if include_cancelled:
+        # Ensure 'cancelled' execution_status is included
+        current_statuses = local_filters.get("statuses", [])
+        if "cancelled" not in current_statuses:
+            current_statuses.append("cancelled")
+        local_filters["statuses"] = current_statuses
+
+    # Apply filters specifically for this component
+    df_filtered = apply_filters(df, local_filters)
 
     if df_filtered.height == 0:
         st.info("No data available with current filters.")

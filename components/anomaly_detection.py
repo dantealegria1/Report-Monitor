@@ -204,6 +204,81 @@ def render_anomaly_detection(df_filtered: pl.DataFrame):
             
             # Save for Histogram access in Tab 4
             st.session_state["latest_anomalies"] = df_anom
+
+            # ---------------------------------------------------------
+            # Git Integration: View History for Selected Anomaly
+            # ---------------------------------------------------------
+            st.divider()
+            st.subheader("🛠️ Root Cause Analysis (Git History)")
+            has_report_file_path = "ControllerActionOrSP" in df_anom.columns
+            
+            # Create a selection list of anomalies
+            # Format: "ReportName (Date | Score)"
+            anom_options = df_anom.select([
+                pl.format(
+                    "{} ({} | Score: {})",
+                    pl.col("ReportName"),
+                    pl.col("started_at").dt.date(),
+                    pl.col("score").round(1),
+                ).alias("label"),
+                pl.col("ReportName"),
+                pl.col("started_at"),
+                (
+                    pl.col("ControllerActionOrSP")
+                    if has_report_file_path
+                    else pl.lit(None)
+                ).alias("ControllerActionOrSP"),
+            ]).to_pandas()
+
+            if not has_report_file_path:
+                st.info("`ControllerActionOrSP` is not available in this dataset. Git history lookup is disabled.")
+            
+            selected_label = st.selectbox(
+                "Select Anomaly to Inspect Code Changes:",
+                anom_options["label"].tolist(),
+                key="git_history_select"
+            )
+            
+            if selected_label:
+                # Get the corresponding file path
+                selected_row = anom_options[anom_options["label"] == selected_label].iloc[0]
+                report_name = selected_row["ReportName"]
+                anomaly_started_at = selected_row["started_at"]
+                file_path_rel = selected_row["ControllerActionOrSP"] + ".sql"
+                
+                if file_path_rel:
+                    from config import REPORTS_REPO_PATH
+                    from utils.git_utils import get_git_history, GitError
+                    
+                    st.markdown(f"**Inspecting File**: `{file_path_rel}` for report *{report_name}*")
+                    st.caption(f"Showing commits up to anomaly time: `{anomaly_started_at}`")
+                    
+                    try:
+                        commits = get_git_history(
+                            REPORTS_REPO_PATH,
+                            file_path_rel,
+                            limit=5,
+                            before_datetime=anomaly_started_at,
+                        )
+                        
+                        if commits:
+                            st.caption(f"Last 5 commits for `{file_path_rel}`:")
+                            for c in commits:
+                                st.markdown(
+                                    f"**{c['date']}** - `{c['hash']}` - **{c['author']}**<br>{c['message']}",
+                                    unsafe_allow_html=True
+                                )
+                                st.divider()
+                        else:
+                            st.info(f"No git history found for `{file_path_rel}`. File might be renamed, moved or not tracked.")
+                            
+                    except GitError as e:
+                        st.error(f"Git Error: {str(e)}")
+                    except Exception as e:
+                         st.error(f"Error retrieving history: {e}")
+                else:
+                    st.warning("No file path associated with this report (ControllerActionOrSP is empty).")
+
         else:
             st.success("Normal Operation: No anomalies detected.")
 
