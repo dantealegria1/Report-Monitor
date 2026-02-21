@@ -86,6 +86,24 @@ def load_comparison_data():
             )
             df = hourly_ts_enriched.to_pandas()
             st.session_state["hourly_ts"] = hourly_ts_enriched
+            
+            # Enrichment utility returns timestamp_hour/report_count names.
+            # Normalize back to Prophet-compatible ds/y names for this page.
+            rename_map = {}
+            if 'ds' not in df.columns and 'timestamp_hour' in df.columns:
+                rename_map['timestamp_hour'] = 'ds'
+            if 'y' not in df.columns and 'report_count' in df.columns:
+                rename_map['report_count'] = 'y'
+            if rename_map:
+                df = df.rename(columns=rename_map)
+        
+        # Final schema guard before model inference
+        required_base_cols = ['ds', 'y']
+        missing_base_cols = [c for c in required_base_cols if c not in df.columns]
+        if missing_base_cols:
+            st.error(f"❌ Missing required columns for comparison: {missing_base_cols}")
+            st.caption(f"Available columns: {list(df.columns)}")
+            return None
         
         # Use test set (last 20% of data)
         split_idx = int(len(df) * 0.8)
@@ -93,7 +111,7 @@ def load_comparison_data():
         
         # Generate Prophet predictions
         prophet_forecast = prophet_model.predict(test_df[['ds']])
-        test_df['y_pred_prophet'] = prophet_forecast['yhat'].values
+        test_df['y_pred_prophet'] = np.clip(prophet_forecast['yhat'].values, 0, None)
         
         # Generate XGBoost adjustments
         xgb_features = test_df[required_features]

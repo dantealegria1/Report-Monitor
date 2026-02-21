@@ -108,6 +108,9 @@ with st.spinner("Running Prophet forecast…"):
 prophet_yhat   = prophet_forecast["yhat"].values
 prophet_lower  = prophet_forecast["yhat_lower"].values
 prophet_upper  = prophet_forecast["yhat_upper"].values
+prophet_yhat   = np.clip(prophet_yhat, 0, None)
+prophet_lower  = np.clip(prophet_lower, 0, None)
+prophet_upper  = np.clip(prophet_upper, 0, None)
 
 # ─────────────────────────────────────────────
 # XGBoost recursive forecast

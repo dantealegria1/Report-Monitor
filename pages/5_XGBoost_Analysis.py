@@ -109,7 +109,7 @@ with tab1:
         st.subheader("Prediction Sample (Correction Sample)")
         # We need to compute hybrid preds for consistency in sample display
         forecast_test = m.predict(test_df[['ds']])
-        test_df['yhat_p'] = forecast_test['yhat'].values
+        test_df['yhat_p'] = np.clip(forecast_test['yhat'].values, 0, None)
         xgb_test_features = test_df[['backlog', 'hour', 'weekday', 'day_of_month', 'month', 'is_month_end', 'is_holiday', 'is_weekend', 'tipo_reporte_id', 'y_lag_1', 'y_lag_2', 'y_rolling_mean_3']]
         adj_test = xgb_model.predict(xgb_test_features)
         test_df['y_pred_xgb'] = np.clip(test_df['yhat_p'] + adj_test, 0, None)

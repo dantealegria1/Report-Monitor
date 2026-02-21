@@ -79,7 +79,7 @@ report_type_id = [k for k, v in label_map.items() if v == selected_type][0]
 
 future_df = pd.DataFrame({'ds': [dt]})
 forecast = m.predict(future_df)
-base_pred = forecast.iloc[0]['yhat']
+base_pred = max(0.0, float(forecast.iloc[0]['yhat']))
 
 xgb_features = pd.DataFrame([[
     backlog_input, target_hour, weekday, day_of_month, month,
@@ -127,7 +127,7 @@ with tab1:
         
         # Prediction for Metrics comparison
         forecast_test = m.predict(test_df[['ds']])
-        test_df['yhat_p'] = forecast_test['yhat'].values
+        test_df['yhat_p'] = np.clip(forecast_test['yhat'].values, 0, None)
         xgb_test_features = test_df[['backlog', 'hour', 'weekday', 'day_of_month', 'month', 'is_month_end', 'is_holiday', 'is_weekend', 'tipo_reporte_id', 'y_lag_1', 'y_lag_2', 'y_rolling_mean_3']]
         adj_test = xgb_model.predict(xgb_test_features)
         test_df['y_pred_hybrid'] = np.clip(test_df['yhat_p'] + adj_test, 0, None)
@@ -169,7 +169,7 @@ with tab2:
     st.divider()
     sim_hours = pd.date_range(start=dt - timedelta(hours=12), end=dt + timedelta(hours=12), freq='h')
     sim_df = pd.DataFrame({'ds': sim_hours})
-    prophet_sim = m.predict(sim_df)['yhat'].values
+    prophet_sim = np.clip(m.predict(sim_df)['yhat'].values, 0, None)
     sim_features = pd.DataFrame({
         'backlog': [backlog_input] * len(sim_hours),
         'hour': sim_hours.hour,
@@ -258,6 +258,7 @@ with tab4:
                                                        'is_month_end', 'is_holiday', 'is_weekend', 'tipo_reporte_id', 
                                                        'y_lag_1', 'y_lag_2', 'y_rolling_mean_3']]
                     xgb_cv_adj = xgb_model.predict(xgb_cv_features)
+                    df_cv_enriched['yhat'] = np.clip(df_cv_enriched['yhat'], 0, None)
                     df_cv_enriched['yhat_hybrid'] = np.clip(df_cv_enriched['yhat'] + xgb_cv_adj, 0, None)
                     
                     # Calculate metrics for Prophet and Hybrid
@@ -327,7 +328,7 @@ with tab4:
         
         # Generate predictions
         forecast_test = m.predict(test_df[['ds']])
-        test_df['yhat_p'] = forecast_test['yhat'].values
+        test_df['yhat_p'] = np.clip(forecast_test['yhat'].values, 0, None)
         xgb_test_features = test_df[['backlog', 'hour', 'weekday', 'day_of_month', 'month', 
                                       'is_month_end', 'is_holiday', 'is_weekend', 'tipo_reporte_id', 
                                       'y_lag_1', 'y_lag_2', 'y_rolling_mean_3']]
