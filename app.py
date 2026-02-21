@@ -53,24 +53,34 @@ try:
     validate_config()
     
     # Load and process data
-    df_raw = load_reports_data()
-    df = add_time_features(df_raw)
-    df = quality_sanitize(df)
+    @st.cache_data(show_spinner="Loading global data...")
+    def get_central_data():
+        df_raw = load_reports_data()
+        df = add_time_features(df_raw)
+        df = quality_sanitize(df)
+        
+        # Enforce global analysis window for 2025
+        df = filter_by_date_range(df, "2025-01-01", "2025-12-31")
+        
+        # Create hourly time series
+        hourly_ts = build_hourly_report_count(df)
+        return df_raw, df, hourly_ts
+
+    df_raw, df, hourly_ts = get_central_data()
     
-    # Day 1: freeze analysis window (A -> B)
-    df = filter_by_date_range(df, "2025-01-01", "2025-12-31")
+    # Store in session state for pages
+    st.session_state["df_raw"] = df_raw
+    st.session_state["df_all"] = df
+    st.session_state["hourly_ts"] = hourly_ts
+    
     presentation_mode = render_presentation_mode_toggle()
     df = apply_presentation_mode(df, presentation_mode)
-    
-    # Day 1: create hourly time series (available in Time Series Analysis page)
-    hourly_ts = build_hourly_report_count(df)
-
-    #Day 2: Baseline
-    st.session_state["hourly_ts"] = hourly_ts
 
     # Render sidebar filters
     filters = render_sidebar_filters(df)
     df_filtered = apply_filters(df, filters)
+    st.session_state["df_filtered"] = df_filtered
+    st.session_state["global_filters"] = filters
     
     # ----------------------------
     # Main Content

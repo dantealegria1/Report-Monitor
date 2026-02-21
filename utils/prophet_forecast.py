@@ -146,11 +146,20 @@ def generate_prophet_predictions(
     # Generate predictions
     forecast = model.predict(future)
     
+    # Safety check: ensure uncertainty columns exist if requested
+    if include_intervals:
+        if 'yhat_lower' not in forecast.columns:
+            forecast['yhat_lower'] = forecast['yhat']
+        if 'yhat_upper' not in forecast.columns:
+            forecast['yhat_upper'] = forecast['yhat']
+
     if inverse_log:
         # Inverse of log1p is expm1
         forecast['yhat'] = np.expm1(forecast['yhat'])
-        forecast['yhat_lower'] = np.expm1(forecast['yhat_lower'])
-        forecast['yhat_upper'] = np.expm1(forecast['yhat_upper'])
+        if 'yhat_lower' in forecast.columns:
+            forecast['yhat_lower'] = np.expm1(forecast['yhat_lower'])
+        if 'yhat_upper' in forecast.columns:
+            forecast['yhat_upper'] = np.expm1(forecast['yhat_upper'])
     
     # Extract predictions and convert back to Polars
     if include_intervals:

@@ -23,13 +23,21 @@ except FileNotFoundError:
 
 st.title("Anomaly Detection & Forensics")
 
-# Load Data
-df_raw = load_reports_data()
-df = add_time_features(df_raw)
-df = quality_sanitize(df)
+# Load Data from session state
+df_raw = st.session_state.get("df_raw")
+df = st.session_state.get("df_all")
 
-# Hardcoded filter to match app.py logic (User requested analysis restricted to 2025+)
-df = filter_by_date_range(df, "2025-01-01", "2025-12-31")
+# Fallback if accessed directly
+if df_raw is None or df is None:
+    with st.spinner("Initializing data..."):
+        df_raw = load_reports_data()
+        df = add_time_features(df_raw)
+        df = quality_sanitize(df)
+        df = filter_by_date_range(df, "2025-01-01", "2025-12-31")
+        
+        st.session_state["df_raw"] = df_raw
+        st.session_state["df_all"] = df
+
 presentation_mode = render_presentation_mode_toggle()
 df = apply_presentation_mode(df, presentation_mode)
 

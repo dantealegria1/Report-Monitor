@@ -96,68 +96,20 @@ def render_prophet_page(hourly_ts: pl.DataFrame):
     ts_col = "timestamp_hour"
     y_col = "report_count"
     
-    # Train/test split configuration
-    st.sidebar.header("Model Configuration")
     
-    # Simple Mode selection
-    config_mode = st.sidebar.radio(
-        "Configuration Mode",
-        ["Expert Preset (Recommended)", "Custom (Manual)"],
-        index=0,
-        help="Expert Preset uses optimized parameters to beat the baseline."
-    )
-    
-    if config_mode == "Expert Preset (Recommended)":
-        # Expert Preset settings
-        changepoint_prior_scale = 0.15
-        seasonality_prior_scale = 10.0
-        seasonality_mode = 'multiplicative'
-        changepoint_range = 0.9
-        daily_seasonality = True
-        weekly_seasonality = True
-        yearly_seasonality = True
-        log_transform = True
-        growth = 'linear'
-        country_holidays = 'US'
-        add_lag1 = True
-        train_ratio = 0.8
-        
-        st.sidebar.info("Expert Settings Applied:\n"
-                        "- Seasonality: All Enabled\n"
-                        "- Holidays: US | Log Transform: On\n"
-                        "- Hybrid Mode: On | Ratio: 80%")
-    else:
-        # Custom manual controls
-        yearly_seasonality = st.sidebar.checkbox("Yearly Seasonality", value=True)
-        weekly_seasonality = st.sidebar.checkbox("Weekly Seasonality", value=True)
-        daily_seasonality = st.sidebar.checkbox("Daily Seasonality", value=True)
-        
-        log_transform = st.sidebar.checkbox("Log Transform", value=True)
-        add_lag1 = st.sidebar.checkbox("Hybrid Mode", value=True)
-        
-        country_holidays = st.sidebar.selectbox(
-            "Country Holidays",
-            [None, 'MX', 'US'],
-            index=2,
-            help="Add holiday effects for a specific country."
-        )
-        
-        train_ratio = st.sidebar.slider(
-            "Training Data Ratio",
-            key="slider_train_ratio",
-            min_value=0.5,
-            max_value=0.95,
-            value=0.8,
-            step=0.05,
-            help="Proportion of data used for training"
-        )
-        
-        # Hidden or defaults for others in manual mode for simplicity
-        changepoint_prior_scale = 0.05
-        seasonality_prior_scale = 10.0
-        seasonality_mode = 'additive'
-        changepoint_range = 0.8
-        growth = 'linear'
+    # Expert Preset settings
+    changepoint_prior_scale = 0.15
+    seasonality_prior_scale = 10.0
+    seasonality_mode = 'multiplicative'
+    changepoint_range = 0.9
+    daily_seasonality = True
+    weekly_seasonality = True
+    yearly_seasonality = True
+    log_transform = True
+    growth = 'linear'
+    country_holidays = 'US'
+    add_lag1 = True
+    train_ratio = 0.8
 
     # Split data
     train_df, test_df = train_test_split_temporal(df, train_ratio=train_ratio, ts_col=ts_col, y_col=y_col)
@@ -463,10 +415,27 @@ def render_prophet_page(hourly_ts: pl.DataFrame):
 # ----------------------------
 # Page Entry
 # ----------------------------
+df_raw = st.session_state.get("df_raw")
 hourly_ts = st.session_state.get("hourly_ts")
 
+# Fallback if accessed directly
+if df_raw is None or hourly_ts is None:
+    from db.database import load_reports_data
+    from utils.data_processing import add_time_features, quality_sanitize, filter_by_date_range, build_hourly_report_count
+    
+    with st.spinner("Initializing data..."):
+        df_raw = load_reports_data()
+        df = add_time_features(df_raw)
+        df = quality_sanitize(df)
+        df = filter_by_date_range(df, "2025-01-01", "2025-12-31")
+        hourly_ts = build_hourly_report_count(df)
+        
+        st.session_state["df_raw"] = df_raw
+        st.session_state["df_all"] = df
+        st.session_state["hourly_ts"] = hourly_ts
+
 if hourly_ts is None:
-    st.warning("No hourly_ts found in session_state. Please open the main page first to generate it.")
+    st.warning("No data available for display.")
 else:
     if not isinstance(hourly_ts, pl.DataFrame):
         st.error(f"hourly_ts is not a Polars DataFrame. Type: {type(hourly_ts)}")

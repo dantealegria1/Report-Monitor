@@ -258,10 +258,27 @@ def render_baseline_page(hourly_ts: pl.DataFrame):
 # ----------------------------
 # Page Entry
 # ----------------------------
+df_raw = st.session_state.get("df_raw")
 hourly_ts = st.session_state.get("hourly_ts")
 
+# Fallback if accessed directly
+if df_raw is None or hourly_ts is None:
+    from db.database import load_reports_data
+    from utils.data_processing import add_time_features, quality_sanitize, filter_by_date_range, build_hourly_report_count
+    
+    with st.spinner("Initializing data..."):
+        df_raw = load_reports_data()
+        df = add_time_features(df_raw)
+        df = quality_sanitize(df)
+        df = filter_by_date_range(df, "2025-01-01", "2025-12-31")
+        hourly_ts = build_hourly_report_count(df)
+        
+        st.session_state["df_raw"] = df_raw
+        st.session_state["df_all"] = df
+        st.session_state["hourly_ts"] = hourly_ts
+
 if hourly_ts is None:
-    st.warning("No hourly_ts found in session_state. Please open the main page first to generate it.")
+    st.warning("No data available for display.")
 else:
     if not isinstance(hourly_ts, pl.DataFrame):
         st.error(f"hourly_ts is not a Polars DataFrame. Type: {type(hourly_ts)}")
