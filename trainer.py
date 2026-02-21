@@ -67,7 +67,7 @@ USE_LGBM    = False   # set True to swap XGBoost for LightGBM
 # 1. DATABASE LOADER
 # ─────────────────────────────────────────────────────────────
 def load_latest_data_from_db(output_csv: str = DATA_PATH) -> bool:
-    print(f"🔌 Connecting to database to refresh {output_csv}...")
+    print(f"Connecting to database to refresh {output_csv}...")
     try:
         from db.database import get_connection_string
         with open("Query_ReportsData.sql", "r") as f:
@@ -77,10 +77,10 @@ def load_latest_data_from_db(output_csv: str = DATA_PATH) -> bool:
         with pyodbc.connect(conn_str) as conn:
             df_sql = pd.read_sql(query, conn)
         df_sql.to_csv(output_csv, index=False)
-        print(f"✅ {len(df_sql):,} records saved to {output_csv}")
+        print(f"Records saved to {output_csv}")
         return True
     except Exception as e:
-        print(f"⚠️  DB refresh failed: {e}\n   Falling back to existing CSV...")
+        print(f"DB refresh failed: {e}\n   Falling back to existing CSV...")
         return False
 
 
@@ -177,7 +177,7 @@ def prepare_data(
     start_date: str = None,
     end_date: str = None,
 ) -> pd.DataFrame:
-    print("🚀 Loading and filtering data...")
+    print("Loading and filtering data...")
     df = pl.read_csv(csv_path, ignore_errors=True)
 
     df = df.with_columns([
@@ -316,7 +316,7 @@ def train_model(df: pd.DataFrame, split_idx: int):
     y_train_log = np.log1p(train_df["y"].clip(lower=0))
     y_test_log  = np.log1p(test_df["y"].clip(lower=0))
 
-    print(f"\n⚡ Training XGBoost on {len(train_df):,} rows "
+    print(f"\nTraining XGBoost on {len(train_df):,} rows "
           f"(log1p target, {len(features)} features)...")
 
     def _fit(extra_params: dict, label: str):
@@ -347,7 +347,7 @@ def train_model(df: pd.DataFrame, split_idx: int):
                 print(f"   {label} done (LightGBM)")
                 return m
             except ImportError:
-                print("⚠️  LightGBM not installed — using XGBoost")
+                print("LightGBM not installed — using XGBoost")
         m = xgb.XGBRegressor(**base)
         m.fit(
             train_df[features], y_train_log,
@@ -380,7 +380,7 @@ def train_model(df: pd.DataFrame, split_idx: int):
     with open("label_mapping.json", "w") as f:
         json.dump(label_map, f)
 
-    print("✅ Models saved (p10 / p50 / p90).")
+    print("Models saved (p10 / p50 / p90).")
     return (model_p50, model_p10, model_p90), df, features
 
 
@@ -453,7 +453,7 @@ def evaluate_and_report(df: pd.DataFrame, split_idx: int) -> dict:
 # 6. WALK-FORWARD CV
 # ─────────────────────────────────────────────────────────────
 def walk_forward_cv(df: pd.DataFrame, n_splits: int = N_CV_FOLDS) -> None:
-    print(f"\n🔄 Walk-Forward CV ({n_splits} folds)...")
+    print(f"\nWalk-Forward CV ({n_splits} folds)...")
     tscv = TimeSeriesSplit(n_splits=n_splits, gap=0)
     features = [f for f in FEATURES if f in df.columns]
 
@@ -501,7 +501,7 @@ def predict_future(df_history: pd.DataFrame, periods: int = 48) -> pd.DataFrame:
     Returns point forecast (p50) + uncertainty bands (p10, p90).
     Predictions are guaranteed ≥ 0.
     """
-    print(f"\n🔭 Forecasting {periods} periods ahead (autoregressive)...")
+    print(f"\nForecasting {periods} periods ahead (autoregressive)...")
 
     def _load_xgb(path):
         m = xgb.XGBRegressor()
@@ -613,12 +613,12 @@ if __name__ == "__main__":
 
     # 2. Feature engineering
     df_final = prepare_data(
-        DATA_PATH, start_date="2025-01-01", end_date="2026-01-19"
+        DATA_PATH, start_date="2025-01-01", end_date="2026-02-10"
     )
 
     # 3. Split
     split_idx = int(len(df_final) * TRAIN_RATIO)
-    print(f"\n📊 Train: {split_idx:,} rows | Test: {len(df_final) - split_idx:,} rows")
+    print(f"\nTrain: {split_idx:,} rows | Test: {len(df_final) - split_idx:,} rows")
 
     # 4. Train (returns tuple of 3 models: p50, p10, p90)
     models, df_trained, features_used = train_model(df_final, split_idx)
@@ -632,7 +632,7 @@ if __name__ == "__main__":
     # 7. Forecast next 48 hours with uncertainty bands
     future = predict_future(df_trained, periods=48)
     future.to_csv("forecast_48h.csv", index=False)
-    print("\n📁 48-hour forecast saved to forecast_48h.csv")
+    print("\n48-hour forecast saved to forecast_48h.csv")
     print(f"\n{'Datetime':<22} {'p10':>8} {'p50 (pred)':>12} {'p90':>8}")
     print("-" * 55)
     for _, r in future.iterrows():

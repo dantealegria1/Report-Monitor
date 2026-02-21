@@ -11,7 +11,7 @@ import os
 
 st.set_page_config(page_title="Model Comparison", layout="wide")
 
-st.title("⚖️ Model Comparison: Prophet vs XGBoost")
+st.title("Model Comparison: Prophet vs XGBoost")
 st.markdown("""
     This analysis compares the **Prophet** (baseline) against the **New XGBoost** (log-transformed)
     by transforming the regression task into a binary classification based on an accuracy threshold.
@@ -42,7 +42,7 @@ m, xgb_p50, label_map, feature_list = load_all_resources()
 
 # --- SIDEBAR CONFIG ---
 with st.sidebar:
-    st.header("🎯 Accuracy Target")
+    st.header("Accuracy Target")
     accuracy_threshold = st.slider(
         "Accuracy Threshold (Error < X Reports)", 
         min_value=5, max_value=100, value=30, step=5,

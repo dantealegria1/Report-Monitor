@@ -271,10 +271,10 @@ def render_heatmap(df_filtered: pl.DataFrame):
             yaxis=dict(autorange='reversed')  # Monday at top
         )
         
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
         
         # Optional: Show data table in expander
-        with st.expander("📊 View Raw Data"):
+        with st.expander("View Raw Data"):
             st.dataframe(heat_piv, width='stretch')
     else:
         st.info("No data available for heatmap.")

@@ -34,18 +34,18 @@ def load_all_resources():
 m, xgb_model, label_map, perf_metrics = load_all_resources()
 
 # --- HEADER ---
-st.title("🚀 Sistema de Monitoreo y Predicción Híbrida IaaS")
+st.title("Sistema de Monitoreo y Predicción Híbrida IaaS")
 st.markdown("""
     *Arquitectura Híbrida Prophet + XGBoost para la optimización de recursos en instancias Azure.*
 """)
 
 if m is None:
-    st.warning("⚠️ No se encontraron los archivos del modelo. Por favor, ejecuta primero `trainer.py`.")
+    st.warning("No se encontraron los archivos del modelo. Por favor, ejecuta primero `trainer.py`.")
     st.stop()
 
 # --- SIDEBAR: INPUTS ---
 with st.sidebar:
-    st.header("🕹️ Parámetros de Operación")
+    st.header("Parámetros de Operación")
     target_date = st.date_input("Fecha de Predicción", datetime.now() + timedelta(days=1))
     target_hour = st.slider("Hora del Día", 0, 23, 12)
     backlog_input = st.number_input("Backlog Real (Reportes en espera)", min_value=0, value=10)
@@ -85,7 +85,7 @@ with st.spinner("Sincronizando modelos..."):
     hybrid_pred = max(0, base_pred + adjustment)
 
 # --- TABS LAYOUT ---
-tab1, tab2, tab3 = st.tabs(["🎯 Inferencia Operativa", "🛡️ Salud del Modelo (MLOps)", "📑 Justificación Académica"])
+tab1, tab2, tab3 = st.tabs(["Inferencia Operativa", "Salud del Modelo (MLOps)", "Justificación Académica"])
 
 with tab1:
     st.subheader("Predicción de Carga en Tiempo Real")
@@ -129,11 +129,11 @@ with tab1:
     st.plotly_chart(fig, use_container_width=True)
 
 with tab2:
-    st.subheader("🛡️ Salud del Modelo y Monitoreo de Estabilidad (MLOps)")
+    st.subheader("Salud del Modelo y Monitoreo de Estabilidad (MLOps)")
     
     col_a, col_b = st.columns(2)
     with col_a:
-        st.info("📊 **Métricas de Estabilidad (Stability Monitoring)**")
+        st.info("Métricas de Estabilidad (Stability Monitoring)")
         st.markdown(r"""
             El **Índice de Estabilidad de Población (PSI)** es la métrica rectora para detectar el *Data Drift*. 
             Un valor bajo indica que los patrones actuales de carga son consistentes con la historia de entrenamiento.
@@ -143,7 +143,7 @@ with tab2:
         st.latex(r"PSI = \sum (Actual\% - Expected\%) \cdot \ln\left(\frac{Actual\%}{Expected\%}\right)")
 
     with col_b:
-        st.warning("⚠️ **Diagnóstico de Degradación (Concept Drift)**")
+        st.warning("Diagnóstico de Degradación (Concept Drift)")
         st.markdown("""
             Se analiza la distribución de los residuos recientes para identificar si el modelo ha perdido capacidad predictiva.
             *   **Estado:** Óptimo.
@@ -152,7 +152,7 @@ with tab2:
         """)
         
     st.divider()
-    st.subheader("📋 Auditoría de Residuos Recientes")
+    st.subheader("Auditoría de Residuos Recientes")
     # Generamos una pequeña tabla de ejemplo formateada a string para evitar errores de PyArrow
     audit_data = pd.DataFrame({
         "Fecha": [(dt - timedelta(hours=i)).strftime("%Y-%m-%d %H:00") for i in range(5)],

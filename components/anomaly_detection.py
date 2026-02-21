@@ -1,5 +1,5 @@
 """
-Anagram detection component.
+Anomaly detection component.
 Handles anomaly detection, drift analysis, and model validation (confusion matrix).
 """
 import streamlit as st
@@ -31,10 +31,10 @@ def render_anomaly_detection(df_filtered: pl.DataFrame):
     st.subheader("Anomaly Detection System")
     
     tab1, tab2, tab3, tab4 = st.tabs([
-        "🔍 Detection Methods", 
-        "📉 Feature Drift (KS Test)", 
-        "🕵️ Report Inspector",
-        "✅ Confusion Matrix (Labeling)"
+        "Detection Methods", 
+        "Feature Drift (KS Test)", 
+        "Report Inspector",
+        "Confusion Matrix (Labeling)"
     ])
     
     # ----------------------------
@@ -190,7 +190,7 @@ def render_anomaly_detection(df_filtered: pl.DataFrame):
             ).sort("score", descending=True)
 
         if df_anom.height > 0:
-            st.error(f"🚨 {df_anom.height} Anomalies Detected")
+            st.error(f"{df_anom.height} Anomalies Detected")
             st.dataframe(
                 df_anom.select([
                     "started_at", "ReportName", 
@@ -209,7 +209,7 @@ def render_anomaly_detection(df_filtered: pl.DataFrame):
             # Git Integration: View History for Selected Anomaly
             # ---------------------------------------------------------
             st.divider()
-            st.subheader("🛠️ Root Cause Analysis (Git History)")
+            st.subheader("Root Cause Analysis (Git History)")
             has_report_file_path = "ControllerActionOrSP" in df_anom.columns
             
             # Create a selection list of anomalies
@@ -337,8 +337,8 @@ def render_drift_analysis(df_filtered: pl.DataFrame):
                 # Add status icon
                 drift_viz = drift_tbl.with_columns(
                     pl.when(pl.col("is_drift"))
-                    .then(pl.lit("🔴 Drift"))
-                    .otherwise(pl.lit("🟢 Stable"))
+                    .then(pl.lit("Drift"))
+                    .otherwise(pl.lit("Stable"))
                     .alias("Status")
                 )
                 
@@ -349,7 +349,7 @@ def render_drift_analysis(df_filtered: pl.DataFrame):
                 
                 n_drift = drift_viz.filter(pl.col("is_drift")).height
                 if n_drift > 0:
-                    st.warning(f"⚠️ Detected **{n_drift}** entities with significant model drift.")
+                    st.warning(f"Detected **{n_drift}** entities with significant model drift.")
             else:
                 st.info("No sufficient data in windows to compare.")
 
@@ -475,12 +475,12 @@ def render_manual_labeling():
             "Backlog": row.get("backlog", "N/A")
         })
     with c2:
-        if st.button("✅ True Anomaly", type="primary", use_container_width=True):
+        if st.button("True Anomaly", type="primary", use_container_width=True):
             st.session_state["labels"]["TP"] += 1
             st.session_state["sample_idx"] += 1
             st.rerun()
             
-        if st.button("❌ False Alarm", use_container_width=True):
+        if st.button("False Alarm", use_container_width=True):
             st.session_state["labels"]["FP"] += 1
             st.session_state["sample_idx"] += 1
             st.rerun()
