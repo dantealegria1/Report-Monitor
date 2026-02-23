@@ -110,33 +110,25 @@ if hourly_ts is not None:
     
     # 2. Recursive XGBoost Prediction
     with st.spinner(f"Simulating {periods} hours recursively..."):
-        history = df_pd.tail(168).copy() # Use last week for initial lags
+        history = df_pd.tail(200).copy() 
         results = []
         ar_holidays = holidays.CountryHoliday('AR')
         
-        # Iterative prediction
         for i, current_dt in enumerate(future_dates):
-            # Build current feature row
             weekday = current_dt.weekday()
             is_peak = 1 if 8 <= current_dt.hour <= 18 else 0
             is_weekend = 1 if weekday >= 5 else 0
             is_holiday = 1 if current_dt in ar_holidays else 0
             
-            # Post-holiday spike logic for simulation
-            # Check if yesterday was a holiday or weekend
-            yesterday_dt = current_dt - timedelta(days=24) # Simple 24h lookback
+            yesterday_dt = current_dt - timedelta(hours=24)
             was_off = 1 if (yesterday_dt in ar_holidays or yesterday_dt.weekday() >= 5) else 0
-            is_post_holiday = 1 if (weekday < 5 and is_holiday == 0 and was_off == 1) else 0
             
-            # Extract Lags from history
+            # El pico suele ocurrir el primer día hábil a la mañana (peak hour)
+            is_post_holiday = 1 if (weekday < 5 and is_holiday == 0 and was_off == 1 and is_peak == 1) else 0
+            
             y_L1 = history['y'].iloc[-1]
             y_L24 = history['y'].iloc[-24] if len(history) >= 24 else y_L1
             y_L168 = history['y'].iloc[-168] if len(history) >= 168 else y_L1
-            
-            # Rolling
-            y_roll3 = history['y'].tail(3).mean()
-            y_roll24 = history['y'].tail(24).mean()
-            y_roll168 = history['y'].tail(168).mean()
             
             row = {
                 "backlog": backlog_start, 
@@ -160,27 +152,26 @@ if hourly_ts is not None:
                 "y_lag_1": float(y_L1),
                 "y_lag_24": float(y_L24),
                 "y_lag_168": float(y_L168),
-                "log_y_lag_1": np.log1p(y_L1),
-                "log_y_lag_24": np.log1p(y_L24),
-                "log_y_lag_168": np.log1p(y_L168),
+                "log_y_lag_1": np.log1p(max(0, y_L1)),
+                "log_y_lag_24": np.log1p(max(0, y_L24)),
+                "log_y_lag_168": np.log1p(max(0, y_L168)),
                 "tipo_reporte_id": int(report_type_id),
-                "days_since_start": (current_dt - first_ds).days,
-                "is_post_holiday": is_post_holiday,
+                "days_since_start": (current_dt - first_ds).days
             }
 
+            # Convertir a DataFrame y alinear con las columnas de entrenamiento
             X = pd.DataFrame([row]).reindex(columns=feature_list, fill_value=0)
             
-            # Predict
+            # Predicción en escala log y reversión con expm1
             pred_p50 = np.expm1(xgb_p50.predict(X)[0])
             pred_p10 = np.expm1(xgb_p10.predict(X)[0])
             pred_p90 = np.expm1(xgb_p90.predict(X)[0])
             
-            # Apply Return-to-Work multiplier if it's a post-holiday spike
-            if is_post_holiday == 1:
+            if is_post_holiday:
                 pred_p50 *= (1.0 + rtw_multiplier)
-                pred_p10 *= (1.0 + rtw_multiplier)
                 pred_p90 *= (1.0 + rtw_multiplier)
 
+            # Validaciones de seguridad
             pred_p50 = max(0, pred_p50)
             pred_p10 = min(pred_p50, max(0, pred_p10))
             pred_p90 = max(pred_p50, pred_p90)
@@ -192,9 +183,9 @@ if hourly_ts is not None:
                 'p90': pred_p90
             })
             
-            # Update history
+            # Alimentar el buffer para la siguiente hora (recursividad)
             new_row = pd.DataFrame({'ds': [current_dt], 'y': [pred_p50]})
-            history = pd.concat([history, new_row]).tail(168)
+            history = pd.concat([history, new_row]).tail(200)
         
     # --- AGGREGATION TO DAILY ---
     res_df = pd.DataFrame(results)

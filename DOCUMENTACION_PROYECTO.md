@@ -1,0 +1,472 @@
+# Documentacion Funcional y Tecnica del Proyecto (Tesina)
+
+## 1. Resumen del sistema
+
+El proyecto implementa una plataforma de monitoreo y analitica de ejecucion de reportes sobre infraestructura IaaS, construida con *Streamlit*, *Polars*, *Pandas* y modelos de pronostico (*Prophet* y *XGBoost cuantilico*).
+
+Objetivos principales:
+
+* Monitorear desempeno operativo de reportes (duracion, fallos, carga).
+* Detectar anomalias y drift estadistico.
+* Pronosticar carga futura con incertidumbre (p10/p50/p90).
+* Recomendar asignacion de colas operativas (S/M/L/XL).
+* Brindar evidencia academica (MAE, RMSE, MASE, ROC, CV historica).
+
+
+## 2. Arquitectura general
+
+### 2.1 Stack principal
+
+* Frontend: Streamlit (multipage app).
+* Procesamiento: Polars + Pandas + Numpy.
+* Visualizacion: Plotly + Vega-Lite nativo de Streamlit.
+* ML:
+  * Prophet (serie temporal base).
+  * XGBoost (modelo avanzado en escala log + cuantiles p10/p50/p90).
+  * KNN (asignacion de cola recomendada).
+* DB: SQL Server via `pyodbc`.
+
+### 2.2 Flujo de datos
+
+1. Carga de datos desde SQL Server (`db/database.py`).
+2. Sanitizacion y features temporales (`utils/data_processing.py`).
+3. Construccion de serie horaria (`build_hourly_report_count`).
+4. Enriquecimiento con features operativas (lags, backlog, feriados, Fourier).
+5. Visualizacion, deteccion y pronosticos en paginas Streamlit.
+
+### 2.3 Estado compartido entre paginas
+
+La app usa `st.session_state` para compartir:
+
+* `df_raw`: dataset crudo.
+* `df_all`: dataset procesado.
+* `hourly_ts`: serie horaria (y luego enriquecida).
+* `df_filtered` y `global_filters`: filtros globales actuales.
+
+
+## 3. Configuracion y prerequisitos
+
+### 3.1 Variables de entorno requeridas
+
+Definidas y validadas en `config.py`:
+
+* `DB_USER`
+* `DB_PASSWORD`
+* `DB_HOST`
+* `DB_NAME`
+
+Opcional:
+
+* `REPORTS_REPO_PATH` (ruta repo para forensica Git en anomalias).
+
+### 3.2 Parametros globales
+
+En `config.py`:
+
+* `CACHE_TTL = 600`
+* `MAX_DURATION_HOURS = 6`
+* `TOP_REPORTS_LIMIT = 200`
+
+
+## 4. Paginas activas (Streamlit multipage)
+
+> **Importante:** En Streamlit, `app.py` funciona como pagina principal (Home) y la carpeta `pages/` agrega paginas adicionales.
+
+### 4.1 Home - Dashboard principal
+Archivo: `app.py`
+
+Funcionalidades:
+
+* Carga global de datos con cache.
+* Aplicacion de filtros globales por fecha/tipo/status/reporte.
+* Modo presentacion (anonimizacion de nombre de reportes).
+* KPIs operativos:
+  * Total ejecuciones.
+  * Duracion promedio (solo success).
+  * Tasa de fallo.
+  * Variabilidad robusta (MAD mediana).
+* Visualizaciones:
+  * Tendencia de ejecuciones por estado (stacked + tooltip por reporte).
+  * Top reportes mas lentos.
+  * Top reportes con mas fallos.
+  * Distribucion de duraciones (histograma por bins).
+  * Carga por hora.
+  * Heatmap dia/hora.
+* Data Quality / Health checks (nulos y ventana temporal).
+* Deteccion de *double-run* (re-ejecuciones en ventana corta):
+  * Umbral configurable en segundos.
+  * Opcion de considerar parametros.
+  * Opcion de incluir cancelados.
+  * Metricas y tabla de detalle.
+
+### 4.2 Pagina 1 - Time Series Analysis
+Archivo: `pages/1_Time_Series_Analysis.py`
+
+Funcionalidades:
+
+* Exploracion de la serie horaria de ejecuciones.
+* Metricas de resumen (horas, volumen total, promedio/hora, max/hora).
+* Ventana de visualizacion configurable por dias.
+* Promedio movil 24h opcional.
+* Inspector de datos (ultimas 100 filas).
+* Estadistica descriptiva de `report_count`.
+* Descarga CSV de serie horaria.
+
+### 4.3 Pagina 2 - Baseline Forecast Comparison
+Archivo: `pages/2_Baseline_Forecast.py`
+
+Funcionalidades:
+
+* Baselines ingenuos:
+  * `t-1` (ultima hora).
+  * `t-168` (misma hora semana previa).
+* Metricas por baseline:
+  * MAE, RMSE, muestras.
+* Comparativo visual: real vs baselines.
+* Analisis de residuales:
+  * Residual en el tiempo.
+  * Histograma de error.
+* Selector de rango de fechas para analisis.
+* Tabla de muestra final.
+
+### 4.4 Pagina 3 - Prophet Forecast
+Archivo: `pages/3_Prophet_Forecast.py`
+
+Funcionalidades:
+
+* Entrenamiento Prophet (o carga de `prophet_model.json` pre-entrenado).
+* Prediccion con intervalos de confianza.
+* Comparacion contra baselines ingenuos.
+* Metricas:
+  * MAE, RMSE, MASE.
+* Dashboard por tabs:
+  * Performance Dashboard.
+  * Forecast Analysis.
+  * Model Insights (componentes, residuos, ACF).
+  * Historical Validation (backtesting rolling windows).
+* Control global por periodo de analisis.
+* Backtesting manual con parametros `initial/period/horizon`.
+
+### 4.5 Pagina 4 - XGBoost Analytical Dashboard
+Archivo: `pages/4_XGBoost_Analytical_Dashboard.py`
+
+Funcionalidades:
+
+* Carga de modelos cuantilicos:
+  * `xgboost_model_p10.json`
+  * `xgboost_model_p50.json`
+  * `xgboost_model_p90.json`
+* Performance del modelo:
+  * MAE, RMSE, MASE, ganancia vs naive.
+  * Comparacion visual real vs p50 + banda p10/p90.
+  * Distribucion de residuos.
+* Simulacion interactiva en tiempo real:
+  * Fecha/hora objetivo.
+  * Backlog.
+  * Lags operativos.
+  * Perfil de carga.
+  * Prediccion p10/p50/p90 para escenario.
+* Arquitectura del modelo:
+  * Importancia de features.
+  * Formulacion log-transform.
+  * Vector completo de entrada.
+* Salud estadistica:
+  * PSI referencial.
+  * Cobertura cuantilica.
+  * Heteroscedasticidad (residual vs predicho).
+
+### 4.6 Pagina 6 - Wiki & Documentation
+Archivo: `pages/6_Wiki.py`
+
+Funcionalidades:
+
+* Base de conocimiento embebida en la app.
+* Tabs documentales:
+  * Overview
+  * KPIs
+  * Filters
+  * Visualizations
+  * Anomaly & Drift
+  * Forecasting
+  * Technical & Data
+  * Glossary & Support
+
+### 4.7 Pagina 7 - Anomaly Detection & Forensics
+Archivo: `pages/7_Anomaly_Detection.py`
+Componente central: `components/anomaly_detection.py`
+
+Funcionalidades:
+
+* Sistema de deteccion por tabs:
+  * Detection Methods.
+  * Feature Drift (KS Test).
+  * Report Inspector.
+  * Confusion Matrix (Labeling).
+* Metodos de deteccion:
+  * Robust Z-Score (MAD).
+  * Contextual Z-Score (por reporte/hora).
+  * Isolation Forest multivariable.
+* Baseline adaptativa opcional (ventanas rolling).
+* Umbral de score configurable.
+* Forensica de causa raiz con Git:
+  * Seleccion de anomalia.
+  * Lookup de historial de commits del SQL asociado.
+  * Filtro temporal hasta la fecha de anomalia.
+* Drift por prueba KS:
+  * Por `ReportType` o Top 50 `ReportName`.
+  * Estadistico KS, p-value, estado Drift/Stable.
+* Inspector por reporte:
+  * Historial completo.
+  * Metricas de ejecucion.
+  * Tendencia de performance y volumen diario.
+* Etiquetado manual (TP/FP/TN/FN) para validacion y precision estimada.
+
+### 4.8 Pagina 8 - Model Comparison
+Archivo: `pages/8_Model_Comparison.py`
+
+Funcionalidades:
+
+* Comparativa Prophet vs XGBoost convertida a clasificacion binaria de precision.
+* Umbral configurable: prediccion correcta si `|error| < X`.
+* Analisis ROC:
+  * Curvas ROC de ambos modelos.
+  * AUC comparativa.
+* Matrices de confusion por modelo.
+* Reporte de metricas de clase (Precision/Recall/F1).
+* Tabla de ejemplos de prediccion cruda.
+
+### 4.9 Pagina 9 - Future Horizon
+Archivo: `pages/9_Future_Horizon.py`
+
+Funcionalidades:
+
+* Proyeccion recursiva multi-paso (horaria, agregada diaria).
+* Configuracion de escenario:
+  * Horizonte (1-15 dias).
+  * Backlog inicial.
+  * Perfil industria.
+  * Regla Return-to-Work (% impacto post feriado/fin de semana).
+* Motor recursivo:
+  * Usa lags autoalimentados con predicciones previas.
+  * Predice p10/p50/p90 por hora.
+* Visualizacion diaria:
+  * Contexto historico reciente.
+  * Banda de incertidumbre.
+  * Comparacion YoY (periodo equivalente).
+  * Marcadores de picos y lineas de capacidad historica.
+* KPIs de horizonte:
+  * Max daily load.
+  * Stress test peak.
+  * Promedio diario y delta vs anio base.
+  * Volumen total proyectado.
+* Componentes estructurales (trend/weekly) desde Prophet.
+
+### 4.10 Pagina 10 - Queue Recommendation
+Archivo: `pages/10_Queue_Recommendation.py`
+
+Funcionalidades:
+
+* Recomendacion de cola operativa por reporte: `S`, `M`, `L`, `XL`.
+* Construccion de features por reporte:
+  * volumen de ejecuciones.
+  * tasas de exito/fallo.
+  * estadisticos de duracion (`avg`, `median`, `p95`).
+* Etiqueta objetivo derivada por bandas de cuantiles de `p95`.
+* Modelo asignador KNN (con escalado).
+* Configuracion:
+  * Minimo de ejecuciones por reporte.
+  * Numero de vecinos.
+  * Semilla aleatoria.
+* Resultados:
+  * Accuracy holdout del KNN.
+  * Tabla de recomendacion por reporte.
+  * Perfil promedio por cola.
+  * Descarga CSV de recomendaciones.
+
+
+## 5. Componentes compartidos (funcionalidad transversal)
+
+### 5.1 Filtros y modo presentacion
+Archivo: `components/filters.py`
+
+* Filtros de sidebar por fecha, tipo, estado y reporte.
+* Modo presentacion:
+  * Reemplaza `ReportName` por `report_<ReportId>`.
+
+### 5.2 KPIs y chequeos de salud
+Archivo: `components/kpis.py`
+
+* KPIs principales de la Home.
+* Health checks de calidad de datos.
+* KPI especializado para MASE con semaforo de interpretacion.
+
+### 5.3 Visualizaciones operativas
+Archivo: `components/charts.py`
+
+* Tendencias de ejecucion por estado.
+* Top lentos y top fallos.
+* Histograma de duraciones.
+* Carga horaria y heatmap.
+* Deteccion y analisis de double-run.
+
+### 5.4 Anomalias y drift
+Archivo: `components/anomaly_detection.py`
+
+* Deteccion robusta/contextual/IF.
+* Drift estadistico KS.
+* Inspector por reporte.
+* Etiquetado manual de anomalias.
+* Integracion Git para causa raiz.
+
+
+## 6. Capa de datos, features y estadistica
+
+### 6.1 Acceso a datos
+Archivo: `db/database.py`
+
+* Conexion SQL Server (ODBC Driver 17).
+* Query unificada de ejecuciones, estatus, metadata de reporte, tipo y parametros.
+* Carga cacheada en memoria de Streamlit.
+
+### 6.2 Procesamiento y feature engineering
+Archivo: `utils/data_processing.py`
+
+Funcionalidades principales:
+
+* `add_time_features`: fecha/hora/weekday.
+* `quality_sanitize`: limpieza por duraciones y nulos.
+* `filter_by_date_range`: recorte por ventana temporal.
+* `build_hourly_report_count`: serie horaria completa con relleno de horas faltantes.
+* `enrich_hourly_ts_with_features`:
+  * calendario (pico, fin de semana, feriado, fin de mes).
+  * encoding ciclico (sin/cos).
+  * Fourier diario/semanal.
+  * lags y rolling stats.
+  * logs de variables de memoria.
+  * backlog por eventos creacion/inicio (asof join).
+  * `avg_param_span_days` desde parseo de parametros.
+
+### 6.3 Estadistica
+Archivo: `utils/statistics.py`
+
+* Robust Z-score con MAD.
+* Drift KS formal por ventanas temporales.
+* Metodo aproximado por cuantiles (`ks_distance_approx`).
+
+### 6.4 Forecasting con Prophet
+Archivo: `utils/prophet_forecast.py`
+
+* Split temporal train/test.
+* Entrenamiento Prophet configurable.
+* Prediccion con/sin intervalos.
+* Metricas MAE/RMSE.
+* MASE (validacion academica).
+* Backtesting rolling windows (diagnostics Prophet).
+
+### 6.5 Utilidades Git
+Archivo: `utils/git_utils.py`
+
+* Resolucion robusta de rutas candidatas para archivos SQL.
+* Consulta de historial de commits por archivo y fecha limite.
+* Manejo de errores tipado (`GitError`).
+
+
+## 7. Entrenamiento y artefactos ML
+
+### 7.1 Pipeline de entrenamiento
+Archivo: `trainer.py`
+
+Incluye:
+
+* Refresh opcional de datos desde DB a CSV (`DatosQuery.csv`).
+* Ingenieria de features avanzada (calendario, Fourier, backlog, lags, param span).
+* Entrenamiento de 3 modelos XGBoost cuantilicos (p10/p50/p90).
+* Evaluacion:
+  * Naive vs XGBoost (MAE/RMSE/MASE).
+  * Cobertura de intervalo cuantilico.
+* Walk-forward cross validation.
+* Prediccion futura autoregresiva (48h) con bandas.
+
+### 7.2 Artefactos generados
+
+* Modelos:
+  * `xgboost_model_p10.json`
+  * `xgboost_model_p50.json`
+  * `xgboost_model_p90.json`
+  * `prophet_model.json` (cuando existe preentrenado)
+* Metadatos:
+  * `feature_list.json`
+  * `label_mapping.json`
+  * `metrics.json`
+* Forecast:
+  * `forecast_48h.csv`
+
+
+## 8. Scripts adicionales del proyecto
+
+### 8.1 ETL para Power BI
+Archivo: `ReportsData.py`
+
+Funcionalidades:
+
+* Extraccion SQL con rango de fechas opcional.
+* Transformaciones base + metricas de error.
+* Exportacion de archivos CSV para Power BI:
+  * metricas mensuales MAE/RMSE.
+  * evolucion de tiempos.
+  * carga por dia/hora.
+  * reportes criticos.
+  * eficiencia por tipo.
+  * excepciones/anomalias robustas.
+
+### 8.2 App hibrida legacy
+Archivo: `hybrid_app.py`
+
+Funcionalidades:
+
+* Dashboard historico de prediccion hibrida Prophet + ajuste XGBoost.
+* Vista de inferencia operativa y salud MLOps.
+* Se mantiene como recurso legacy/no principal frente al esquema multipagina actual.
+
+
+## 9. Paginas legacy/deprecadas (no activas en flujo principal)
+
+Directorio: `pages/deprecaded/`
+
+### 9.1 `pages/deprecaded/4_Hybrid_Forecast.py`
+
+* Version anterior de forecasting avanzado con simulacion y bandas cuantilicas.
+* Funcionalidad absorbida/evolucionada por:
+  * `pages/4_XGBoost_Analytical_Dashboard.py`
+  * `pages/9_Future_Horizon.py`
+
+### 9.2 `pages/deprecaded/5_XGBoost_Analysis.py`
+
+* Version anterior de analisis de capa XGBoost (precision, insights, estabilidad).
+* Funcionalidad absorbida por `pages/4_XGBoost_Analytical_Dashboard.py`.
+
+
+## 10. Mapa rapido de navegacion
+
+* Home: `app.py`
+* Analisis serie: `pages/1_Time_Series_Analysis.py`
+* Baselines: `pages/2_Baseline_Forecast.py`
+* Prophet: `pages/3_Prophet_Forecast.py`
+* XGBoost: `pages/4_XGBoost_Analytical_Dashboard.py`
+* Wiki interna: `pages/6_Wiki.py`
+* Anomalias/forensica: `pages/7_Anomaly_Detection.py`
+* Comparacion modelos: `pages/8_Model_Comparison.py`
+* Horizonte futuro: `pages/9_Future_Horizon.py`
+* Recomendacion de cola: `pages/10_Queue_Recommendation.py`
+
+
+## 11. Alcance documental de esta entrega
+
+Este documento cubre:
+
+* Todas las paginas activas del sistema multipagina.
+* Funcionalidades tecnicas transversales (filtros, KPIs, charts, anomalias, drift).
+* Capa de datos, estadistica y entrenamiento.
+* Scripts auxiliares y modulos legacy/deprecados para trazabilidad de tesina.
+
+
