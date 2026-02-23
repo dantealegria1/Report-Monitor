@@ -7,6 +7,7 @@ import polars as pl
 import pandas as pd
 import numpy as np
 import math
+import plotly.graph_objects as go
 
 # Prophet utilities
 from utils.prophet_forecast import (
@@ -14,8 +15,11 @@ from utils.prophet_forecast import (
     train_prophet_model,
     generate_prophet_predictions,
     compute_metrics,
-    get_forecast_components
+    get_forecast_components,
+    compute_mase,
+    run_prophet_backtesting
 )
+from components.kpis import render_mase_kpi
 
 # Baseline utilities for comparison
 from utils.baseline import add_naive_predictions
@@ -86,116 +90,83 @@ def render_prophet_page(hourly_ts: pl.DataFrame):
     df = df.sort(ts_col).with_columns(pl.col(y_col).fill_null(0))
     
     st.title("Prophet Forecast")
-    
-    # Information Alert
-    st.info("Advanced forecast based on Meta Prophet. For more details on interpreting these charts, consult the Wiki page.")
-
     # ----------------------------
     # Model Training & Prediction
     # ----------------------------
     ts_col = "timestamp_hour"
     y_col = "report_count"
     
-    # Train/test split configuration
-    st.sidebar.header("Model Configuration")
     
-    # Simple Mode selection
-    config_mode = st.sidebar.radio(
-        "Configuration Mode",
-        ["Expert Preset (Recommended)", "Custom (Manual)"],
-        index=0,
-        help="Expert Preset uses optimized parameters to beat the baseline."
-    )
-    
-    if config_mode == "Expert Preset (Recommended)":
-        # User requested settings for Expert Preset
-        changepoint_prior_scale = 0.15
-        seasonality_prior_scale = 10.0
-        seasonality_mode = 'multiplicative'
-        changepoint_range = 0.9
-        daily_seasonality = True
-        weekly_seasonality = True
-        yearly_seasonality = True
-        log_transform = True
-        growth = 'linear'
-        country_holidays = 'US'
-        add_lag1 = True
-        train_ratio = 0.8
-        
-        st.sidebar.info("Expert Settings Applied:\n"
-                        "- Daily: On | Weekly: On | Yearly: On\n"
-                        "- US Holidays | Log Transform: On\n"
-                        "- Hybrid Mode: On | Ratio: 80%")
-    else:
-        # Minimalist manual controls consolidated into one section
-        yearly_seasonality = st.sidebar.checkbox("Yearly Seasonality", value=True)
-        weekly_seasonality = st.sidebar.checkbox("Weekly Seasonality", value=True)
-        daily_seasonality = st.sidebar.checkbox("Daily Seasonality", value=True)
-        
-        log_transform = st.sidebar.checkbox("Log Transform", value=True)
-        add_lag1 = st.sidebar.checkbox("Hybrid Mode", value=True)
-        
-        country_holidays = st.sidebar.selectbox(
-            "Country Holidays",
-            [None, 'MX', 'US'],
-            index=2, # Default to US as requested
-            help="Add holiday effects for a specific country."
-        )
-        
-        train_ratio = st.sidebar.slider(
-            "Training Data Ratio",
-            key="slider_train_ratio",
-            min_value=0.5,
-            max_value=0.95,
-            value=0.8,
-            step=0.05,
-            help="Proportion of data used for training"
-        )
-        
-        # Hidden or defaults for others in manual mode for simplicity
-        changepoint_prior_scale = 0.05
-        seasonality_prior_scale = 10.0
-        seasonality_mode = 'additive'
-        changepoint_range = 0.8
-        growth = 'linear'
+    # Expert Preset settings
+    changepoint_prior_scale = 0.15
+    seasonality_prior_scale = 10.0
+    seasonality_mode = 'multiplicative'
+    changepoint_range = 0.9
+    daily_seasonality = True
+    weekly_seasonality = True
+    yearly_seasonality = True
+    log_transform = True
+    growth = 'linear'
+    country_holidays = 'US'
+    add_lag1 = True
+    train_ratio = 0.8
 
     # Split data
     train_df, test_df = train_test_split_temporal(df, train_ratio=train_ratio, ts_col=ts_col, y_col=y_col)
-    
-    # Help message for low performance (moved before training/metrics for better visibility)
-    if st.session_state.get("last_improvement", 0) < 0:
-        st.info("Tip for Improvement: To beat a strong baseline, try: \n"
-                "1. Enabling Log Transform (highly effective for count data)\n"
-                "2. Increasing Changepoint Prior Scale to 0.1 or 0.2\n"
-                "3. Setting Seasonality Mode to Multiplicative if variance grows with the mean.")
-    
-    
     # Caching the model training to avoid re-running on every interaction
     @st.cache_resource(show_spinner="Training Prophet model...", ttl=3600)
     def train_prophet_model_cached(train_df, **kwargs):
         return train_prophet_model(train_df, **kwargs)
 
-    # Train Prophet model
+    # Pre-trained Model Support
+    import os
+    from prophet.serialize import model_from_json
+    
+    use_pretrained = False
+    if os.path.exists('prophet_model.json'):
+        use_pretrained = st.sidebar.checkbox("Load Pre-trained Model (prophet_model.json)", value=True)
+
+    # Load performance metrics if they exist for consistency
+    perf_metrics = None
+    import os, json
+    if os.path.exists('metrics.json'):
+        try:
+            with open('metrics.json', 'r') as f:
+                perf_metrics = json.load(f)
+        except:
+            pass
+
+    # Train or Load Prophet model
     try:
-        model, log_used = train_prophet_model_cached(
-            train_df,
-            ts_col=ts_col,
-            y_col=y_col,
-            daily_seasonality=daily_seasonality,
-            weekly_seasonality=weekly_seasonality,
-            yearly_seasonality=yearly_seasonality,
-            changepoint_prior_scale=changepoint_prior_scale,
-            seasonality_prior_scale=seasonality_prior_scale,
-            seasonality_mode=seasonality_mode,
-            changepoint_range=changepoint_range,
-            log_transform=log_transform,
-            growth=growth,
-            country_holidays=country_holidays,
-            add_lag1=add_lag1
-        )
-        st.success("Prophet model trained successfully (Cached)!")
+        if use_pretrained:
+            with open('prophet_model.json', 'r') as f:
+                model = model_from_json(f.read())
+            
+            # trainer.py currently DOES NOT use log_transform or internal lag1 in Prophet
+            log_used = False 
+            add_lag1 = False 
+            
+            st.success("Pre-trained Prophet model loaded successfully!")
+        else:
+            model, log_used = train_prophet_model_cached(
+                train_df,
+                ts_col=ts_col,
+                y_col=y_col,
+                daily_seasonality=daily_seasonality,
+                weekly_seasonality=weekly_seasonality,
+                yearly_seasonality=yearly_seasonality,
+                changepoint_prior_scale=changepoint_prior_scale,
+                seasonality_prior_scale=seasonality_prior_scale,
+                seasonality_mode=seasonality_mode,
+                changepoint_range=changepoint_range,
+                log_transform=log_transform,
+                growth=growth,
+                country_holidays=country_holidays,
+                add_lag1=add_lag1
+            )
+            st.success("Prophet model trained successfully (Cached)!")
     except Exception as e:
-        st.error(f"Error training Prophet model: {e}")
+        st.error(f"Error loading/training Prophet model: {e}")
         st.stop()
     
     # Get last training value for lag1 continuity
@@ -295,293 +266,176 @@ def render_prophet_page(hourly_ts: pl.DataFrame):
     # --- Metrics & Results Tabs ---
     st.divider()
     
-    # ----------------------------
-    # Global Visualization Controls
-    # ----------------------------
-    st.markdown("### Forecast Visualization & Analysis")
+    # --- Global Controls ---
+    st.markdown("### Visualization Controls")
     
     # Date Range Picker
     min_date = plot_data.select(pl.col(ts_col).min()).item()
     max_date = plot_data.select(pl.col(ts_col).max()).item()
-    
-    # Default to last 7 days
     default_start = max_date - pd.Timedelta(days=7)
     
     c_global_date1, c_global_date2 = st.columns([1, 3])
     with c_global_date1:
         date_range = st.date_input(
-            "Select Date Range (applies to all charts)",
+            "Analysis Period",
             value=(default_start, max_date),
             min_value=min_date,
             max_value=max_date,
             key="prophet_date_range_global"
         )
     
-    # Determine filter range
     if len(date_range) == 2:
-        start_date, end_date = date_range
-        # Ensure start_date/end_date are datetime for comparison if they are date objects
-        start_dt = pd.Timestamp(start_date)
-        end_dt = pd.Timestamp(end_date) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1) # End of day
+        start_dt, end_dt = pd.Timestamp(date_range[0]), pd.Timestamp(date_range[1]) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
     else:
-        # Fallback if range is invalid
-        start_dt = default_start
-        end_dt = max_date
+        start_dt, end_dt = default_start, max_date
 
-    # Filter data for all tabs
-    filtered_plot_data = plot_data.filter(
-        (pl.col(ts_col) >= start_dt) & (pl.col(ts_col) <= end_dt)
-    )
-    
-    filtered_test_df = test_df.filter(
-        (pl.col(ts_col) >= start_dt) & (pl.col(ts_col) <= end_dt)
-    )
+    filtered_plot_data = plot_data.filter((pl.col(ts_col) >= start_dt) & (pl.col(ts_col) <= end_dt))
+    filtered_test_df = test_df.filter((pl.col(ts_col) >= start_dt) & (pl.col(ts_col) <= end_dt))
 
     tab1, tab2, tab3, tab4 = st.tabs([
-        "Performance Summary", 
-        "Forecast Visualization", 
-        "Model Components", 
-        "Diagnostics & Residuals"
+        "Performance Dashboard", 
+        "Forecast Analysis", 
+        "Model Insights",
+        "Historical Validation"
     ])
 
     with tab1:
-        st.subheader("Model Comparison")
+        st.subheader("Performance Comparison Dashboard")
+        mc1, mc2, mc3 = st.columns(3)
         
-        # Key metrics in columns
-        mc1, mc2, mc3, mc4 = st.columns(4)
+        display_mae = prophet_test_metrics['MAE']
+        display_rmse = prophet_test_metrics['RMSE']
+        if use_pretrained and perf_metrics:
+            display_mae = perf_metrics.get('mae_p', display_mae)
+            display_rmse = perf_metrics.get('rmse_p', display_rmse)
+
         with mc1:
-            st.metric(
-                "Prophet MAE (Test)",
-                f"{prophet_test_metrics['MAE']:.4f}" if prophet_test_metrics['MAE'] is not None else "N/A",
-                help="Mean Absolute Error on test set"
-            )
+            st.metric("Prophet MAE", f"{display_mae:.4f}" if display_mae is not None else "N/A")
         with mc2:
-            st.metric(
-                "Prophet MAE (Train)",
-                f"{prophet_train_metrics['MAE']:.4f}" if prophet_train_metrics['MAE'] is not None else "N/A",
-                help="Mean Absolute Error on training set (diagnostics)"
-            )
+            st.metric("Prophet RMSE", f"{display_rmse:.4f}" if display_rmse is not None else "N/A")
         with mc3:
-            if baseline_mae_lh is not None and prophet_test_metrics['MAE'] is not None:
-                improvement = ((baseline_mae_lh - prophet_test_metrics['MAE']) / baseline_mae_lh) * 100
-                st.session_state["last_improvement"] = improvement
-                st.metric(
-                    "Improvement vs Baseline",
-                    f"{improvement:.2f}%",
-                    delta=f"{improvement:.2f}%",
-                    help="Percentage improvement in MAE compared to last hour baseline on Test set"
-                )
-        with mc4:
-            if prophet_train_metrics['MAE'] and prophet_test_metrics['MAE']:
-                ratio = prophet_test_metrics['MAE'] / prophet_train_metrics['MAE']
-                st.metric(
-                    "Ratio Overfitting",
-                    f"{ratio:.2f}x",
-                    help="Test MAE / Train MAE. Values > 1.5x suggest overfitting."
-                )
+            if use_pretrained and perf_metrics:
+                st.metric("Prophet MASE", f"{perf_metrics.get('mase_p', 0):.4f}")
+            
+        st.divider()
+        st.markdown("### Academic Validation (MASE)")
+        col_m1, col_m2 = st.columns([1, 2])
+        with col_m1:
+            mase_1 = compute_mase(
+                training_df=train_df, test_df=test_df, predictions=test_predictions,
+                y_col=y_col, pred_col="y_pred_prophet", ts_col=ts_col, m=1
+            )
+            render_mase_kpi(mase_1)
+        with col_m2:
+            st.info("MASE < 1.0 indicates the model outperforms the seasonal naive baseline.")
 
         st.divider()
-        st.markdown("**Comparison Table (Test Set)**")
-        comparison_data = {
-            "Model": ["Prophet", "Baseline (last hour)", "Baseline (last week)"],
-            "MAE": [
-                f"{prophet_test_metrics['MAE']:.4f}" if prophet_test_metrics['MAE'] is not None else "N/A",
-                f"{baseline_mae_lh:.4f}" if baseline_mae_lh is not None else "N/A",
-                f"{baseline_mae_lw:.4f}" if baseline_mae_lw is not None else "N/A"
-            ],
-            "RMSE": [
-                f"{prophet_test_metrics['RMSE']:.4f}" if prophet_test_metrics['RMSE'] is not None else "N/A",
-                f"{baseline_rmse_lh:.4f}" if baseline_rmse_lh is not None else "N/A",
-                f"{baseline_rmse_lw:.4f}" if baseline_rmse_lw is not None else "N/A"
-            ],
-            "Samples": [
-                prophet_test_metrics['n_samples'],
-                n_lh,
-                n_lw
-            ]
-        }
-        st.dataframe(comparison_data, use_container_width=True)
-        
+        st.subheader("Prediction vs Actual (Test Set)")
+        fig_p = go.Figure()
+        fig_p.add_trace(go.Scatter(
+            x=filtered_plot_data[ts_col].to_pandas(), y=filtered_plot_data["yhat_upper"].to_numpy(),
+            fill=None, mode='lines', line_color='rgba(31, 119, 180, 0)', showlegend=False
+        ))
+        fig_p.add_trace(go.Scatter(
+            x=filtered_plot_data[ts_col].to_pandas(), y=filtered_plot_data["yhat_lower"].to_numpy(),
+            fill='tonexty', mode='lines', line_color='rgba(31, 119, 180, 0)',
+            fillcolor='rgba(31, 119, 180, 0.2)', name="Confidence Interval"
+        ))
+        fig_p.add_trace(go.Scatter(x=filtered_plot_data[ts_col].to_pandas(), y=filtered_plot_data["actual"].to_numpy(), name="Actual", line=dict(color='red'), opacity=0.6))
+        fig_p.add_trace(go.Scatter(x=filtered_plot_data[ts_col].to_pandas(), y=filtered_plot_data["y_pred_prophet"].to_numpy(), name="Prophet", line=dict(color='#1f77b4', width=3)))
+        fig_p.update_layout(height=400, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+        st.plotly_chart(fig_p, width='stretch')
+
         st.divider()
-        st.markdown("**Prediction Sample**")
-        sample_data = (
-            filtered_plot_data.select(["timestamp_str", "actual", "y_pred_prophet", "y_pred_last_hour"])
-            .tail(20)
-            .to_dicts()
-        )
-        st.dataframe(sample_data, use_container_width=True)
+        st.subheader("Prediction Sample (Latest Records)")
+        st.dataframe(filtered_plot_data.select([ts_col, "actual", "y_pred_prophet"]).tail(20).to_pandas(), width='stretch')
 
     with tab2:
-        st.subheader("Prediction vs Actual")
+        st.subheader("Detailed Time Series Analysis")
+        show_ci = st.checkbox("Show Confidence Intervals", value=True, key="prophet_show_ci")
+        fig_detail = go.Figure()
+        if show_ci:
+            fig_detail.add_trace(go.Scatter(x=filtered_plot_data[ts_col].to_pandas(), y=filtered_plot_data["yhat_upper"].to_numpy(), fill=None, mode='lines', line_color='rgba(31, 119, 180, 0)', showlegend=False))
+            fig_detail.add_trace(go.Scatter(x=filtered_plot_data[ts_col].to_pandas(), y=filtered_plot_data["yhat_lower"].to_numpy(), fill='tonexty', mode='lines', line_color='rgba(31, 119, 180, 0)', fillcolor='rgba(31, 119, 180, 0.2)', name="Confidence Interval"))
         
-        chart_data = filtered_plot_data.to_dicts()
-
-        # Toggle for Confidence Intervals
-        show_ci = st.checkbox("Show Confidence Intervals (yhat_lower/upper)", value=True, key="prophet_show_ci")
-
-        if chart_data:
-            # Base layers
-            layers = []
-            
-            # Confidence Interval (Area) - Conditionally added
-            if show_ci:
-                layers.append({
-                    "mark": {"type": "area", "color": "#1f77b4", "opacity": 0.2},
-                    "encoding": {
-                        "y": {"field": "yhat_lower", "type": "quantitative"},
-                        "y2": {"field": "yhat_upper"}
-                    }
-                })
-            
-            # Lines with Legend (Folded)
-            layers.append({
-                "transform": [
-                    {"fold": ["actual", "y_pred_prophet", "y_pred_last_hour", "y_pred_last_week"], "as": ["Variable", "Value"]}
-                ],
-                "mark": "line",
-                "encoding": {
-                    "y": {"field": "Value", "type": "quantitative", "title": "Report Count"},
-                    "color": {
-                        "field": "Variable", 
-                        "type": "nominal",
-                        "scale": {
-                            "domain": ["actual", "y_pred_prophet", "y_pred_last_hour", "y_pred_last_week"],
-                            "range": ["#ff0303", "#1f77b4", "#ff7f0e", "#2ca02c"]
-                        },
-                        "legend": {"title": "Model / Series", "orient": "bottom"}
-                    },
-                    "strokeDash": {
-                        "field": "Variable",
-                        "scale": {
-                            "domain": ["actual", "y_pred_prophet", "y_pred_last_hour", "y_pred_last_week"],
-                            "range": [[1,0], [1,0], [5,5], [2,2]]
-                        }
-                    },
-                    "strokeWidth": {
-                        "condition": [
-                            {"test": "datum.Variable === 'y_pred_prophet'", "value": 3},
-                            {"test": "datum.Variable === 'actual'", "value": 2}
-                        ],
-                        "value": 1.5
-                    },
-                    "opacity": {
-                        "condition": {"test": "datum.Variable === 'actual'", "value": 0.6},
-                        "value": 1
-                    }
-                }
-            })
-
-            # Vega-Lite Spec with Fold for Legend
-            st.vega_lite_chart(
-                chart_data,
-                {
-                    "encoding": {"x": {"field": "timestamp_str", "type": "temporal", "title": "Time"}},
-                    "layer": layers,
-                    "width": "container",
-                    "height": 500
-                },
-                use_container_width=True
-            )
+        fig_detail.add_trace(go.Scatter(x=filtered_plot_data[ts_col].to_pandas(), y=filtered_plot_data["y_pred_last_hour"].to_numpy(), name="Naive (Last Hour)", line=dict(color='#ff7f0e', dash='dash')))
+        fig_detail.add_trace(go.Scatter(x=filtered_plot_data[ts_col].to_pandas(), y=filtered_plot_data["y_pred_last_week"].to_numpy(), name="Naive (Last Week)", line=dict(color='#2ca02c', dash='dot')))
+        fig_detail.add_trace(go.Scatter(x=filtered_plot_data[ts_col].to_pandas(), y=filtered_plot_data["actual"].to_numpy(), name="Actual", line=dict(color='red'), opacity=0.6))
+        fig_detail.add_trace(go.Scatter(x=filtered_plot_data[ts_col].to_pandas(), y=filtered_plot_data["y_pred_prophet"].to_numpy(), name="Prophet", line=dict(color='#1f77b4', width=3)))
+        fig_detail.update_layout(height=450, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+        st.plotly_chart(fig_detail, width='stretch')
 
     with tab3:
-        st.subheader("Forecast Components")
-        st.markdown("These components show the trends and periodic patterns detected by the model.")
-        
-        # Use filtered data based on date range instead of potentially crashing hour count
-        forecast_components = get_forecast_components(
-            model, filtered_test_df, 
-            ts_col=ts_col, y_col=y_col,
-            inverse_log=log_used, add_lag1=add_lag1, 
-            train_df_last_y=last_y_train
-        )
-        
+        st.subheader("Model Insights")
         c1, c2 = st.columns(2)
         with c1:
-            st.markdown("**Trend**")
+            st.markdown("**Seasonality & Trends**")
+            forecast_components = get_forecast_components(model, filtered_test_df, ts_col=ts_col, y_col=y_col, inverse_log=log_used, add_lag1=add_lag1, train_df_last_y=last_y_train)
             st.line_chart(pd.DataFrame({'trend': forecast_components['trend']}).set_index(forecast_components['ds']))
-        
         with c2:
-            if 'daily' in forecast_components.columns:
-                st.markdown("**Daily Seasonality**")
-                st.line_chart(pd.DataFrame({'daily': forecast_components['daily']}).set_index(forecast_components['ds']))
-        
-        if 'weekly' in forecast_components.columns:
-            st.divider()
-            st.markdown("**Weekly Seasonality**")
-            st.line_chart(pd.DataFrame({'weekly': forecast_components['weekly']}).set_index(forecast_components['ds']))
-
-    with tab4:
-        st.subheader("Residual Analysis & Diagnostics")
-        
-        rc1, rc2 = st.columns(2)
-        with rc1:
-            st.markdown("**Residuals over time**")
-            st.vega_lite_chart(
-                residuals_df.select(["timestamp_str", "residual"]).to_dicts(),
-                {
-                    "mark": {"type": "bar", "color": "#d62728"},
-                    "encoding": {
-                        "x": {"field": "timestamp_str", "type": "temporal", "title": "Time"},
-                        "y": {"field": "residual", "type": "quantitative", "title": "Error (Actual - predicted)"}
-                    },
-                    "width": "container",
-                    "height": 300
-                },
-                use_container_width=True
-            )
-        with rc2:
             st.markdown("**Error Distribution**")
-            st.vega_lite_chart(
-                residuals_df.select("residual").to_dicts(),
-                {
-                    "mark": {"type": "bar", "color": "#9467bd"},
-                    "encoding": {
-                        "x": {"bin": True, "field": "residual", "title": "Error Magnitude"},
-                        "y": {"aggregate": "count", "title": "Frequency"}
-                    },
-                    "width": "container",
-                    "height": 300
-                },
-                use_container_width=True
-            )
+            fig_res2 = go.Figure(go.Histogram(x=residuals_df["residual"].to_numpy(), nbinsx=30, marker_color="#9467bd"))
+            fig_res2.update_layout(height=300, margin=dict(l=0, r=0, t=20, b=0))
+            st.plotly_chart(fig_res2, width='stretch')
             
         st.divider()
         st.subheader("Autocorrelation (ACF)")
-        st.markdown("Indicates how much the current value depends on past values. High correlation at Lag 1 explains why the baseline is hard to beat.")
-        
+        st.markdown("High correlation at Lag 1 explains why the baseline is challenging to outperform.")
         if y_var > 0:
-            st.vega_lite_chart(
-                acf_values,
-                {
-                    "mark": "bar",
-                    "encoding": {
-                        "x": {"field": "lag", "type": "quantitative", "title": "Lag (Hours)"},
-                        "y": {"field": "correlation", "type": "quantitative", "title": "Autocorrelation"},
-                        "color": {
-                            "condition": {"test": "datum.correlation > 0.5", "value": "#1f77b4"},
-                            "value": "#aec7e8"
-                        }
-                    },
-                    "width": "container",
-                    "height": 250
-                },
-                use_container_width=True
-            )
+            acf_df = pd.DataFrame(acf_values)
+            fig_acf = go.Figure(go.Bar(x=acf_df["lag"], y=acf_df["correlation"], marker_color="#1f77b4"))
+            fig_acf.update_layout(height=250, margin=dict(l=0, r=0, t=20, b=0))
+            st.plotly_chart(fig_acf, width='stretch')
         
-        st.divider()
-        with st.expander("Model Details"):
+        with st.expander("Technical Model Details"):
             st.write(f"Changepoints detected: {len(model.changepoints)}")
-            st.write(f"Changepoint Prior Scale: {changepoint_prior_scale:.4f}")
             st.write(f"Seasonality Mode: {seasonality_mode}")
+
+    with tab4:
+        st.subheader("Historical Validation (Backtesting)")
+        st.markdown(" operação real simulation using Rolling Windows for operational stability analysis.")
+        with st.expander("Backtesting Configuration", expanded=True):
+            bc1, bc2, bc3 = st.columns(3)
+            with bc1: cv_initial = st.text_input("Initial Window", value="21 days")
+            with bc2: cv_period = st.text_input("Period", value="3 days")
+            with bc3: cv_horizon = st.text_input("Horizon", value="2 days")
+
+        if st.button("Run Cross-Validation"):
+            with st.spinner("Running Backtesting..."):
+                try:
+                    df_cv, df_p = run_prophet_backtesting(model, initial=cv_initial, period=cv_period, horizon=cv_horizon)
+                    st.success("Backtesting completed!")
+                    st.markdown("### Performance Metrics by Horizon")
+                    st.dataframe(df_p, width='stretch')
+                    st.line_chart(df_p.set_index('horizon')['mae'])
+                except Exception as e:
+                    st.error(f"Error: {e}")
 
 
 # ----------------------------
 # Page Entry
 # ----------------------------
+df_raw = st.session_state.get("df_raw")
 hourly_ts = st.session_state.get("hourly_ts")
 
+# Fallback if accessed directly
+if df_raw is None or hourly_ts is None:
+    from db.database import load_reports_data
+    from utils.data_processing import add_time_features, quality_sanitize, filter_by_date_range, build_hourly_report_count
+    
+    with st.spinner("Initializing data..."):
+        df_raw = load_reports_data()
+        df = add_time_features(df_raw)
+        df = quality_sanitize(df)
+        df = filter_by_date_range(df, "2025-01-01", "2025-12-31")
+        hourly_ts = build_hourly_report_count(df)
+        
+        st.session_state["df_raw"] = df_raw
+        st.session_state["df_all"] = df
+        st.session_state["hourly_ts"] = hourly_ts
+
 if hourly_ts is None:
-    st.warning("No hourly_ts found in session_state. Please open the main page first to generate it.")
+    st.warning("No data available for display.")
 else:
     if not isinstance(hourly_ts, pl.DataFrame):
         st.error(f"hourly_ts is not a Polars DataFrame. Type: {type(hourly_ts)}")

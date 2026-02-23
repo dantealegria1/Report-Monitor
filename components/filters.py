@@ -6,6 +6,33 @@ import streamlit as st
 import polars as pl
 from config import TOP_REPORTS_LIMIT
 
+def render_presentation_mode_toggle() -> bool:
+    """Render sidebar toggle for anonymized report names."""
+    if "presentation_mode" not in st.session_state:
+        st.session_state["presentation_mode"] = False
+
+    enabled = st.sidebar.checkbox(
+        "Presentation Mode",
+        value=st.session_state["presentation_mode"],
+        help="Replace report names with anonymized labels (report_<ReportId>).",
+        key="presentation_mode_checkbox",
+    )
+    st.session_state["presentation_mode"] = enabled
+    return enabled
+
+
+def apply_presentation_mode(df: pl.DataFrame, enabled: bool) -> pl.DataFrame:
+    """Anonymize ReportName values when presentation mode is enabled."""
+    if not enabled:
+        return df
+
+    return df.with_columns(
+        pl.when(pl.col("ReportId").is_null())
+        .then(pl.lit("report_unknown"))
+        .otherwise(pl.format("report_{}", pl.col("ReportId").cast(pl.Utf8)))
+        .alias("ReportName")
+    )
+
 
 def render_sidebar_filters(df: pl.DataFrame) -> dict:
     """

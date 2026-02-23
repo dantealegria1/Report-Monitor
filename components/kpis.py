@@ -62,3 +62,51 @@ def render_health_checks(df_raw: pl.DataFrame, df_filtered: pl.DataFrame):
             st.write(f"**Current Window:** {first_ts}  to  {last_ts}")
             
             st.dataframe(nulls, use_container_width=True)
+
+
+def render_mase_kpi(mase: float | None):
+    """
+    Render MASE (Mean Absolute Scaled Error) KPI with color coding.
+    
+    Args:
+        mase: The calculated MASE value
+    """
+    if mase is None:
+        st.metric("MASE (vs Seasonal Naive)", "N/A", help="Not enough data to calculate MASE")
+        return
+
+    # Color coding logic
+    # < 1.0 : Green (Better than naive)
+    # 1.0 - 1.1 : Yellow (Similar to naive)
+    # > 1.1 : Red (Worse than naive)
+    
+    improvement_pct = (1 - mase) * 100
+
+    if mase < 1.0:
+        # Si el MASE baja (ej. 0.57), la mejora es positiva (43%)
+        # Usamos inverse para que un delta negativo (reducción de error) sea verde
+        st.metric(
+            label="MASE",
+            value=f"{mase:.2f}",
+            delta=f"-{improvement_pct:.1f}% error vs Naive",
+            delta_color="inverse", 
+            help="If MASE < 1, the model is more accurate than repeating the previous value."
+        )
+    elif mase <= 1.1:
+        st.metric(
+            label="MASE",
+            value=f"{mase:.2f}",
+            delta="Similar to Baseline",
+            delta_color="off"
+        )
+    else:
+        # Si el MASE sube (ej. 1.2), el error aumentó un 20%
+        # Con inverse, un delta positivo (más error) se pintará de rojo
+        st.metric(
+            label="MASE",
+            value=f"{mase:.2f}",
+            delta=f"+{(mase - 1)*100:.1f}% error vs Naive",
+            delta_color="inverse"
+        )
+    
+

@@ -20,7 +20,7 @@ from utils.data_processing import (
 # ----------------------------
 # Page Configuration
 # ----------------------------
-st.set_page_config(page_title="Time Series Analysis", layout="wide", page_icon="📊")
+st.set_page_config(page_title="Time Series Analysis", layout="wide")
 
 # Inject Custom CSS
 try:
@@ -36,16 +36,33 @@ try:
     # Validate configuration
     validate_config()
     
-    # Load and process data
-    df_raw = load_reports_data()
-    df = add_time_features(df_raw)
-    df = quality_sanitize(df)
+    # Retrieve data from session state
+    df_raw = st.session_state.get("df_raw")
+    hourly_ts = st.session_state.get("hourly_ts")
     
-    # Filter to analysis window
-    df = filter_by_date_range(df, "2024-01-01", "2026-12-31")
-    
-    # Create hourly time series
-    hourly_ts = build_hourly_report_count(df)
+    # Fallback if accessed directly
+    if df_raw is None or hourly_ts is None:
+        from db.database import load_reports_data
+        from utils.data_processing import add_time_features, quality_sanitize, filter_by_date_range, build_hourly_report_count
+        
+        with st.spinner("Initializing data (First run or session expired)..."):
+            df_raw = load_reports_data()
+            df = add_time_features(df_raw)
+            df = quality_sanitize(df)
+            df = filter_by_date_range(df, "2025-01-01", "2025-12-31")
+            hourly_ts = build_hourly_report_count(df)
+            
+            st.session_state["df_raw"] = df_raw
+            st.session_state["df_all"] = df
+            st.session_state["hourly_ts"] = hourly_ts
+
+    # Enrich with features for Model Backtesting (Backlog, Lags, etc.)
+    from utils.data_processing import enrich_hourly_ts_with_features
+    # Only enrich if not already enriched (check for a feature like hour_sin)
+    if 'hour_sin' not in hourly_ts.columns:
+        with st.spinner("Enriching time series with operational variables..."):
+            hourly_ts = enrich_hourly_ts_with_features(hourly_ts, df_raw)
+        st.session_state["hourly_ts"] = hourly_ts
     
     # ----------------------------
     # Display Time Series Data
@@ -131,7 +148,7 @@ try:
     c1, c2 = st.columns(2)
     with c1:
         st.subheader("Data Inspector")
-        st.dataframe(hourly_ts.tail(100).to_pandas(), use_container_width=True)
+        st.dataframe(hourly_ts.tail(100).to_pandas(), width='stretch')
     with c2:
         st.subheader("Descriptive Statistics")
         st.dataframe(hourly_ts.select("report_count").to_pandas().describe(), use_container_width=True)
