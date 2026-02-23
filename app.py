@@ -76,6 +76,7 @@ try:
     presentation_mode = render_presentation_mode_toggle()
     df = apply_presentation_mode(df, presentation_mode)
 
+
     # Render sidebar filters
     filters = render_sidebar_filters(df)
     df_filtered = apply_filters(df, filters)
@@ -117,7 +118,7 @@ try:
     st.divider()
     render_hourly_load(df_filtered)
     render_heatmap(df_filtered)
-
+    
     # Double-Run Detection
     st.divider()
     render_double_run_detection(df, filters)
