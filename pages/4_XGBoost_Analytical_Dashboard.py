@@ -46,7 +46,6 @@ def load_all_resources():
         with open('feature_list.json', 'r') as f:
             feature_list = json.load(f)
             
-<<<<<<< HEAD
         if os.path.exists('model_metadata.json'):
             with open('model_metadata.json', 'r') as f:
                 meta = json.load(f)
@@ -59,14 +58,6 @@ def load_all_resources():
         return None, None, None, None, None, None
 
 m, xgb_models, label_map, perf_metrics, feature_list, meta = load_all_resources()
-=======
-        return m, (xgb_p10, xgb_p50, xgb_p90), label_map, perf_metrics, feature_list
-    except Exception as e:
-        st.error(f"Error loading models: {e}")
-        return None, None, None, None, None
-
-m, xgb_models, label_map, perf_metrics, feature_list = load_all_resources()
->>>>>>> main
 
 # --- HEADER ---
 st.title("XGBoost Analytical Dashboard")
@@ -139,17 +130,11 @@ with tab1:
         
         # 2. Detailed Time Series Comparison
         test_xgb_features = test_df[feature_list]
-<<<<<<< HEAD
         is_log = meta.get("target_transform", "raw") == "log1p"
         
         test_df['y_pred_xgb'] = (np.expm1(xgb_p50.predict(test_xgb_features)) if is_log else xgb_p50.predict(test_xgb_features)).clip(min=0)
         test_df['y_p10'] = (np.expm1(xgb_p10.predict(test_xgb_features)) if is_log else xgb_p10.predict(test_xgb_features)).clip(min=0)
         test_df['y_p90'] = (np.expm1(xgb_p90.predict(test_xgb_features)) if is_log else xgb_p90.predict(test_xgb_features)).clip(min=0)
-=======
-        test_df['y_pred_xgb'] = np.expm1(xgb_p50.predict(test_xgb_features)).clip(min=0)
-        test_df['y_p10'] = np.expm1(xgb_p10.predict(test_xgb_features)).clip(min=0)
-        test_df['y_p90'] = np.expm1(xgb_p90.predict(test_xgb_features)).clip(min=0)
->>>>>>> main
         test_df['y_naive'] = test_df['y'].shift(1).fillna(method='bfill') # Naive Baseline for chart
 
         fig_compare = go.Figure()
@@ -245,16 +230,10 @@ with tab2:
     # Fill remaining features with 0
     sim_features = pd.DataFrame([sim_row]).reindex(columns=feature_list, fill_value=0)
     
-<<<<<<< HEAD
     is_log = meta.get("target_transform", "raw") == "log1p"
     s_pred = float(np.expm1(xgb_p50.predict(sim_features)[0]) if is_log else xgb_p50.predict(sim_features)[0])
     s_p10 = float(np.expm1(xgb_p10.predict(sim_features)[0]) if is_log else xgb_p10.predict(sim_features)[0])
     s_p90 = float(np.expm1(xgb_p90.predict(sim_features)[0]) if is_log else xgb_p90.predict(sim_features)[0])
-=======
-    s_pred = np.expm1(xgb_p50.predict(sim_features)[0])
-    s_p10 = np.expm1(xgb_p10.predict(sim_features)[0])
-    s_p90 = np.expm1(xgb_p90.predict(sim_features)[0])
->>>>>>> main
     
     with col_inp2:
         st.markdown(f"#### Estimation for {dt.strftime('%A, %b %d at %H:00')}")
