@@ -588,7 +588,7 @@ def promote_if_better(new_metrics: dict, force_promote: bool = False) -> bool:
             champion_mase = float("inf")
 
     new_mase = new_metrics.get("mase", float("inf"))
-    promoted = force_promote or arch_changed or (new_mase < champion_mase)
+    promoted = force_promote or arch_changed or (new_mase <= champion_mase)
 
     if promoted:
         reason = ("forced reset flag"
@@ -618,7 +618,7 @@ def promote_if_better(new_metrics: dict, force_promote: bool = False) -> bool:
         print(f"\n🏆 New champion promoted! MASE={new_mase:.4f}  version=v{MODEL_VERSION}")
     else:
         print(f"\n⚔️  Challenger did not beat champion "
-              f"(MASE {new_mase:.4f} >= {champion_mase:.4f})")
+              f"(MASE {new_mase:.4f} > {champion_mase:.4f})")
 
     for name in ["p50", "p10", "p90"]:
         tmp = f"xgboost_model_{name}_challenger.json"

@@ -33,12 +33,18 @@ def load_all_resources():
         with open('feature_list.json', 'r') as f:
             feature_list = json.load(f)
             
-        return m, xgb_p50, label_map, feature_list
+        if os.path.exists('model_metadata.json'):
+            with open('model_metadata.json', 'r') as f:
+                meta = json.load(f)
+        else:
+            meta = {"target_transform": "log1p"}
+
+        return m, xgb_p50, label_map, feature_list, meta
     except Exception as e:
         st.error(f"Missing required models or files: {e}")
-        return None, None, None, None
+        return None, None, None, None, None
 
-m, xgb_p50, label_map, feature_list = load_all_resources()
+m, xgb_p50, label_map, feature_list, meta = load_all_resources()
 
 # --- SIDEBAR CONFIG ---
 with st.sidebar:
@@ -95,7 +101,8 @@ if hourly_ts is not None:
         
         # 2. XGBoost (New Model)
         test_xgb_features = test_df[feature_list]
-        test_df['y_pred_xgb'] = np.expm1(xgb_p50.predict(test_xgb_features)).clip(min=0)
+        is_log = meta.get("target_transform", "raw") == "log1p"
+        test_df['y_pred_xgb'] = (np.expm1(xgb_p50.predict(test_xgb_features)) if is_log else xgb_p50.predict(test_xgb_features)).clip(min=0)
         
         # Binary Labels (1 if precise, 0 if error > threshold)
         test_df['correct_prophet'] = (np.abs(test_df['y'] - test_df['y_pred_prophet']) < accuracy_threshold).astype(int)
