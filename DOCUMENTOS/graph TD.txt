@@ -1,0 +1,28 @@
+graph TD
+    subgraph "Fase 1: Ingeniería de Datos"
+        A[<b>Recolección</b><br/>Métricas de IaaS: Duración, Backlog y Timestamps] --> B(<b>Preparación</b><br/>Limpieza de nulos y tratamiento de Outliers)
+        B --> C[<b>Enriquecimiento</b><br/>Ingeniería de variables: Horas, Días, Festivos]
+        C --> D[<b>Segmentación</b><br/>División de datos: Entrenamiento y Prueba]
+    end
+
+    subgraph "Fase 2: Desarrollo del Núcleo de ML"
+        D --> E1[<b>Forecasting</b><br/>Prophet y XGBoost]
+        D --> E2[<b>Detección de Anomalías</b><br/>Isolation Forest]
+        
+        E1 --> F1[<b>Validación Temporal</b><br/>Pruebas con Rolling Window]
+        E2 --> F2[<b>Evaluación de Errores</b><br/>Cálculo de F1-Score y Precisión]
+    end
+
+    subgraph "Fase 3: Validación y Decisión"
+        F1 --> G[<b>Análisis Comparativo</b><br/>Métricas MAE, RMSE vs. Baseline]
+        G & F2 --> H{<b>Criterio de Selección</b><br/>¿El modelo es estable y preciso?}
+        H -->|SÍ| I[<b>Cuantificación de Valor</b><br/>Simulación de ahorro en costos IaaS]
+    end
+
+    subgraph "Fase 4: Operatividad y Feedback"
+        I --> J[<b>Visualización</b><br/>Dashboard en Streamlit para monitoreo]
+        J --> K[<b>MLOps</b><br/>Detección de Drift y alertas de reentrenamiento]
+        K --> L[<b>RESULTADO FINAL</b><br/>Optimización proactiva de recursos]
+    end
+
+    K -.->|Feedback Loop| A

@@ -1,0 +1,167 @@
+name: XGBoost Hyperparameter Search & Champion Promotion
+
+on:
+  # Run nightly at 2 AM UTC
+  schedule:
+    - cron: "0 2 * * *"
+  # Allow manual trigger with optional grid search
+  workflow_dispatch:
+    inputs:
+      grid_search:
+        description: "Run full hyperparameter grid search?"
+        required: false
+        default: "false"
+        type: choice
+        options: ["false", "true"]
+      train_start:
+        description: "Training start date (YYYY-MM-DD)"
+        required: false
+        default: "2025-01-01"
+      train_end:
+        description: "Training end date (YYYY-MM-DD)"
+        required: false
+        default: ""   # empty = use today
+
+jobs:
+  train-and-promote:
+    name: Train XGBoost & Promote Champion
+    runs-on: ubuntu-latest
+
+    env:
+      # Override these via GitHub Secrets
+      DB_USER:     ${{ secrets.DB_USER }}
+      DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+      DB_HOST:     ${{ secrets.DB_HOST }}
+      DB_NAME:     ${{ secrets.DB_NAME }}
+      MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI || 'mlruns' }}
+
+    steps:
+      # ── 1. Checkout ─────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # Fetch full history so metrics.json / model files persist
+          fetch-depth: 0
+
+      # ── 2. Download current champion model artifacts ───────
+      #        (if stored as a GitHub release or workflow artifact)
+      - name: Download champion model from previous run
+        uses: actions/download-artifact@v4
+        with:
+          name: champion-models
+          path: .
+        continue-on-error: true   # first run has no artifact — that's OK
+
+      # ── 3. Set up Python ────────────────────────────────────
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      # ── 4. Install dependencies ─────────────────────────────
+      - name: Install Python dependencies
+        run: |
+          pip install --upgrade pip
+          pip install \
+            xgboost scikit-learn pandas polars numpy holidays \
+            mlflow pyodbc python-dotenv
+
+      # ── 5. Patch TRAIN_END if not supplied ──────────────────
+      - name: Resolve training end date
+        id: dates
+        run: |
+          TRAIN_END="${{ github.event.inputs.train_end }}"
+          if [ -z "$TRAIN_END" ]; then
+            TRAIN_END=$(date +%Y-%m-%d)
+          fi
+          echo "TRAIN_END=$TRAIN_END" >> $GITHUB_ENV
+          echo "TRAIN_START=${{ github.event.inputs.train_start || '2025-01-01' }}" >> $GITHUB_ENV
+
+      # ── 6. Patch trainer.py with date overrides ─────────────
+      - name: Override training dates in trainer.py
+        run: |
+          python - <<'EOF'
+          import re
+          with open("trainer.py", "r", encoding="utf-8") as f:
+              src = f.read()
+          import os
+          ts = os.environ["TRAIN_START"]
+          te = os.environ["TRAIN_END"]
+          src = re.sub(r'TRAIN_START\s*=\s*"[^"]*"', f'TRAIN_START  = "{ts}"', src)
+          src = re.sub(r'TRAIN_END\s*=\s*"[^"]*"',   f'TRAIN_END    = "{te}"', src)
+          with open("trainer.py", "w", encoding="utf-8") as f:
+              f.write(src)
+          print(f"Dates patched: {ts} → {te}")
+          EOF
+
+      # ── 7. Run trainer ──────────────────────────────────────
+      - name: Train model
+        run: |
+          if [ "${{ github.event.inputs.grid_search }}" = "true" ]; then
+            echo "Running GRID SEARCH..."
+            python trainer.py --grid-search
+          else
+            echo "Running SINGLE config..."
+            python trainer.py
+          fi
+
+      # ── 8. Upload champion model as GitHub artifact ─────────
+      - name: Upload champion models
+        uses: actions/upload-artifact@v4
+        with:
+          name: champion-models
+          path: |
+            xgboost_model_p50.json
+            xgboost_model_p10.json
+            xgboost_model_p90.json
+            xgboost_model.json
+            metrics.json
+            model_metadata.json
+            feature_list.json
+            label_mapping.json
+            hourly_correction.json
+            forecast_13d.csv
+          retention-days: 90
+          overwrite: true
+
+      # ── 9. Upload MLflow experiment tracking ────────────────
+      - name: Upload MLflow run data
+        uses: actions/upload-artifact@v4
+        with:
+          name: mlflow-runs-${{ github.run_number }}
+          path: mlruns/
+          retention-days: 30
+
+      # ── 10. Post champion metrics as PR / job summary ───────
+      - name: Report champion metrics
+        run: |
+          python - <<'EOF'
+          import json, os
+          if os.path.exists("metrics.json"):
+              with open("metrics.json") as f:
+                  m = json.load(f)
+              summary = f"""
+          ## XGBoost Champion Metrics
+          | Metric | Value |
+          |--------|-------|
+          | MAE    | {m.get('mae', 'N/A'):.4f} |
+          | RMSE   | {m.get('rmse', 'N/A'):.4f} |
+          | MASE   | {m.get('mase', 'N/A'):.4f} |
+          | Transform | {m.get('target_transform', 'N/A')} |
+          | Model Version | {m.get('model_version', 'N/A')} |
+          """
+              with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+                  f.write(summary)
+              print(summary)
+          else:
+              print("No metrics.json found — training may have failed.")
+          EOF
+
+      # ── 11. Commit champion models back to repo (optional) ──
+      #   Uncomment if you want models stored in git (not recommended for large files)
+      # - name: Commit models to repo
+      #   uses: stefanzweifel/git-auto-commit-action@v5
+      #   with:
+      #     commit_message: "ci: promote XGBoost champion [skip ci]"
+      #     file_pattern: "*.json forecast_13d.csv"
