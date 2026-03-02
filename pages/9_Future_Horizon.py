@@ -38,12 +38,27 @@ def load_models():
         with open("feature_list.json", "r") as f:
             feature_list = json.load(f)
             
+<<<<<<< HEAD
+        if os.path.exists("model_metadata.json"):
+            with open("model_metadata.json", "r") as f:
+                meta = json.load(f)
+        else:
+            meta = {"target_transform": "log1p"}
+            
+        return prophet, (xgb_p10, xgb_p50, xgb_p90), label_map, feature_list, meta
+    except Exception as e:
+        st.error(f"Error loading models: {e}")
+        return None, None, None, None, None
+
+prophet, xgb_models, label_map, feature_list, meta = load_models()
+=======
         return prophet, (xgb_p10, xgb_p50, xgb_p90), label_map, feature_list
     except Exception as e:
         st.error(f"Error loading models: {e}")
         return None, None, None, None
 
 prophet, xgb_models, label_map, feature_list = load_models()
+>>>>>>> main
 
 if prophet is None or xgb_models is None:
     st.warning("Prediction models not detected. Please run training first.")
@@ -171,9 +186,24 @@ if hourly_ts is not None:
             X = pd.DataFrame([row]).reindex(columns=feature_list, fill_value=0)
             
             # Predict
+<<<<<<< HEAD
+            raw_p50 = float(xgb_p50.predict(X)[0])
+            raw_p10 = float(xgb_p10.predict(X)[0])
+            raw_p90 = float(xgb_p90.predict(X)[0])
+            
+            if meta.get("target_transform", "raw") == "log1p":
+                pred_p50 = np.expm1(raw_p50)
+                pred_p10 = np.expm1(raw_p10)
+                pred_p90 = np.expm1(raw_p90)
+            else:
+                pred_p50 = raw_p50
+                pred_p10 = raw_p10
+                pred_p90 = raw_p90
+=======
             pred_p50 = np.expm1(xgb_p50.predict(X)[0])
             pred_p10 = np.expm1(xgb_p10.predict(X)[0])
             pred_p90 = np.expm1(xgb_p90.predict(X)[0])
+>>>>>>> main
             
             # Apply Return-to-Work multiplier if it's a post-holiday spike
             if is_post_holiday == 1:
