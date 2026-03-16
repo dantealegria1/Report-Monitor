@@ -40,7 +40,8 @@ def load_reports_data():
         r.Id AS ReportId,
         CAST(r.[File] AS NVARCHAR(255)) AS ControllerActionOrSP,
         ra.Parameters,
-        TRIM(q.ReportType) AS ReportType
+        TRIM(q.ReportType) AS ReportType,
+        r.QueueNumber AS ReportQueueId
     FROM reportsdata ra
     JOIN reports r ON ra.ReportId = r.Id
     JOIN ReportQueues q ON q.Id = r.QueueNumber

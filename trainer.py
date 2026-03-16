@@ -1,36 +1,40 @@
 """
-Forecasting Model v7 — Spike Fix + Wider Quantiles + Hourly Floor + Two-Stage Spike Detector
-==============================================================================================
-Changes vs v6  (all driven by forecast_13d_vs_actuals.csv diagnostic):
+Forecasting Model v8 — Band Narrowing + Stronger Spike Blend + No Double-Widening
+====================================================================================
+Changes vs v7  (all driven by forecast_15d_vs_actuals.csv diagnostic):
 
-  1. sample_weight: y² / mean(y²) instead of y/mean(y)
-     — A 150-rph hour now gets ~100× weight vs a 15-rph hour (v6: 10×)
-     — Directly targets the −45 rph bias on hours with actual > 100
+  1. Quantile alphas narrowed back: p10=0.025→0.10, p90=0.975→0.90
+     — v7 coverage was 99.6% vs 80% target; the 0.025/0.975 alphas were too
+       aggressive. Returning to 0.10/0.90 and fixing the root cause (transform
+       mismatch) instead.
+     — width_mult capped at 1.5× (was unbounded sqrt(day)) so 13-day horizon
+       doesn't balloon bands to ±50 rph.
 
-  2. Quantile alpha widened: p10=0.05→0.025, p90=0.95→0.975
-     — v6 coverage was 44.8% vs 80% target; widening the training alphas
-       is the most direct lever before post-hoc band scaling kicks in.
-     — Combined with horizon-aware sqrt(day) widening already in predict_future
+  2. Spike blend weight raised 0.50→0.65, threshold raised 0.50→0.65
+     — v7 high-vol bias was −16.98 rph (down from −45.7 but still too large).
+     — Higher blend weight pulls prediction harder toward the spike-hour mean.
+     — Higher threshold reduces false positives on quiet hours.
+     — Additional band widening (1.20×) now gated on spike_prob >= 0.80 only,
+       preventing unnecessary inflation on borderline spikes.
 
-  3. Hourly P25 floor (HOURLY_FLOOR_FILE) applied in predict_future
-     — Hours 9–15 had a near-constant −20 to −41 rph bias (from diagnostic).
-     — floor = P25 of training actuals per hour, applied AFTER bias correction.
-     — Computed in train_model / step_hourly_floor (already present in v6 but
-       NOT applied in predict_future — that's the bug fixed here).
+  3. No double-widening: horizon widening (step 6) is skipped when spike boost fires
+     — v7 stacked step-5 (1.20× spike) AND step-6 (sqrt(day)) multiplicatively.
+     — Now a boolean spike_fired flag skips step-6 for spike hours.
 
-  4. Two-stage spike detector (new SpikeClassifier)
-     — Binary XGBoost classifier: P(hour is "high-volume") where high = y > P75
-       of training set. Threshold at 0.50.
-     — When classifier fires AND model under-predicts relative to hourly median,
-       prediction is blended toward the high-volume conditional mean for that hour.
-     — Trained in train_model, saved as xgboost_spike_classifier.json
-     — Applied in predict_future after base prediction
+  4. Hourly residual diagnostics added to evaluate_and_report
+     — Prints per-hour mean residual for hours 8–18 so bias regressions are
+       visible in the console without needing post-hoc CSV analysis.
 
-  5. MODEL_VERSION bumped to 7 → forces auto-promotion on first run
-     (architecture change detected via model_metadata.json)
+  5. Bias correction computed on rolling 30-day window instead of full test set
+     — Correction on a small/atypical test set introduced noise in v7.
+     — Now uses the most recent 30 days of data for a more stable correction.
 
-  6. evaluate_and_report adds "eval_high_vol_bias" metric (actual > 50)
-     so the improvement is explicitly tracked in MLflow across versions.
+  6. MODEL_VERSION bumped to 8 → forces auto-promotion on first run.
+
+Expected improvements vs v7:
+  - Coverage: 99.6% → 78–85%  (target ~80%)
+  - High-vol bias: −16.98 → −5 to −10 rph
+  - MAE: similar (~10–11)
 """
 
 import re
@@ -106,9 +110,14 @@ SPIKE_CLASSIFIER_FILE       = "xgboost_spike_classifier.json"
 SPIKE_METADATA_FILE         = "spike_metadata.json"
 MODEL_METADATA_FILE         = "model_metadata.json"
 
-# FIX 1 — architecture bump forces auto-promotion on first v7 run
+# FIX 6 — architecture bump forces auto-promotion on first v8 run
 CURRENT_TRANSFORM = "raw"
-MODEL_VERSION     = 7
+MODEL_VERSION     = 8
+
+# FIX 2 — spike tuning constants (raised from v7)
+SPIKE_BLEND        = 0.65   # was 0.50 — pulls harder toward spike-hour mean
+SPIKE_THRESH       = 0.65   # was 0.50 — reduces quiet-hour false positives
+SPIKE_BAND_THRESH  = 0.80   # new — additional band widening only above this
 
 
 # ─────────────────────────────────────────────────────────────
@@ -295,10 +304,7 @@ def train_model(df: pd.DataFrame, split_idx: int, hyperparams: dict = None):
     y_train = train_df["y"].clip(lower=0).values.astype(np.float64)
     y_test  = test_df["y"].clip(lower=0).values.astype(np.float64)
 
-    # ── FIX 1: y²-proportional sample weights ───────────────
-    # Diagnostic showed hours > 100 rph had −45 rph bias.
-    # y²/mean(y²) gives 100× weight to a 150-rph hour vs a 15-rph hour,
-    # vs log1p(y) which gave only ~1.7×, and y/mean(y) which gave 10×.
+    # y²-proportional sample weights (unchanged from v7)
     # Clipped at 1.0 so quiet hours are never completely ignored.
     _mean_sq = float(np.mean(y_train ** 2)) if np.mean(y_train ** 2) > 0 else 1.0
     sample_weight_p50 = np.maximum(y_train ** 2 / _mean_sq, 1.0)
@@ -335,19 +341,20 @@ def train_model(df: pd.DataFrame, split_idx: int, hyperparams: dict = None):
                                    sample_weight=sample_weight_p50)
         mlflow.log_metric("p50_best_score", float(model_p50.best_score))
 
-    # ── FIX 2: Wider quantile alphas (0.025 / 0.975) ────────
-    # v6 used 0.05/0.95 → coverage was 44.8% vs 80% target.
-    # Widening training alphas directly increases the learned interval width.
+    # FIX 1 — Narrower quantile alphas (0.10 / 0.90) vs v7 (0.025 / 0.975)
+    # v7 coverage was 99.6% — way above the 80% target. The root cause of v6's
+    # low coverage (44.8%) was the log1p→raw transform mismatch, which is now
+    # fixed. These alphas produce a tighter, more useful operational interval.
     with mlflow.start_run(run_name="step_train_p10", nested=True):
-        mlflow.log_param("quantile_alpha", 0.025)
+        mlflow.log_param("quantile_alpha", 0.10)
         model_p10 = _fit_regressor("reg:quantileerror", "p10 (lower bound)",
-                                   quantile_alpha=0.025)
+                                   quantile_alpha=0.10)
         mlflow.log_metric("p10_best_score", float(model_p10.best_score))
 
     with mlflow.start_run(run_name="step_train_p90", nested=True):
-        mlflow.log_param("quantile_alpha", 0.975)
+        mlflow.log_param("quantile_alpha", 0.90)
         model_p90 = _fit_regressor("reg:quantileerror", "p90 (upper bound)",
-                                   quantile_alpha=0.975)
+                                   quantile_alpha=0.90)
         mlflow.log_metric("p90_best_score", float(model_p90.best_score))
 
     # Predictions on full df — raw scale, no expm1
@@ -356,9 +363,7 @@ def train_model(df: pd.DataFrame, split_idx: int, hyperparams: dict = None):
     df["y_pred_p10"] = model_p10.predict(df[features]).clip(min=0)
     df["y_pred_p90"] = model_p90.predict(df[features]).clip(min=0)
 
-    # ── FIX 4: Two-stage spike classifier ───────────────────
-    # Binary XGBoost: label = 1 if y > P75(training actuals).
-    # Saves the classifier + per-hour conditional means for the blend step.
+    # Two-stage spike classifier (unchanged architecture from v7)
     with mlflow.start_run(run_name="step_spike_classifier", nested=True):
         spike_threshold = float(np.percentile(y_train, 75))
         y_spike_train = (y_train > spike_threshold).astype(int)
@@ -396,10 +401,10 @@ def train_model(df: pd.DataFrame, split_idx: int, hyperparams: dict = None):
         # Overall spike mean as fallback
         overall_spike_mean = float(train_df_tmp[train_df_tmp["y"] > spike_threshold]["y"].mean())
         spike_metadata = {
-            "threshold":         round(spike_threshold, 2),
+            "threshold":          round(spike_threshold, 2),
             "overall_spike_mean": round(overall_spike_mean, 2),
-            "hourly_spike_mean": {int(h): round(float(v), 2)
-                                  for h, v in spike_hour_mean.items()},
+            "hourly_spike_mean":  {int(h): round(float(v), 2)
+                                   for h, v in spike_hour_mean.items()},
         }
         with open(SPIKE_METADATA_FILE, "w") as f:
             json.dump(spike_metadata, f, indent=2)
@@ -412,23 +417,31 @@ def train_model(df: pd.DataFrame, split_idx: int, hyperparams: dict = None):
         print(f"      [TRACE] Spike hourly means (9–15): "
               + "  ".join(f"h{h}={spike_hour_mean.get(h, overall_spike_mean):.0f}"
                           for h in range(9, 16)))
+        print(f"      [TRACE] Spike params: blend={SPIKE_BLEND}, "
+              f"fire_thresh={SPIKE_THRESH}, band_thresh={SPIKE_BAND_THRESH}")
         mlflow.log_params({
             "spike_threshold":    spike_threshold,
             "n_spike_train":      n_spike_train,
-            "spike_blend_weight": 0.35,
+            "spike_blend_weight": SPIKE_BLEND,
+            "spike_fire_thresh":  SPIKE_THRESH,
+            "spike_band_thresh":  SPIKE_BAND_THRESH,
         })
         mlflow.log_metric("spike_classifier_best_score", float(spike_clf.best_score))
         mlflow.log_artifact(SPIKE_CLASSIFIER_FILE)
         mlflow.log_artifact(SPIKE_METADATA_FILE)
 
-    # ── Additive hourly bias correction ─────────────────────
+    # FIX 5 — Bias correction on rolling 30-day window
+    # v7 computed correction on full test set (df.iloc[split_idx:]) which could
+    # be noisy if test period is small or unrepresentative. Using the most
+    # recent 30 days of the full dataset gives a more stable correction.
     with mlflow.start_run(run_name="step_bias_calibration", nested=True):
-        test_eval = df.iloc[split_idx:].copy()
-        test_eval["hour_col"] = pd.to_datetime(test_eval["ds"]).dt.hour
+        # Use most recent 30 days (720 hours) for correction
+        correction_window = df.tail(min(720, len(df))).copy()
+        correction_window["hour_col"] = pd.to_datetime(correction_window["ds"]).dt.hour
 
         correction = {}
-        if len(test_eval) > 0:
-            grp = test_eval.groupby("hour_col").apply(
+        if len(correction_window) > 0:
+            grp = correction_window.groupby("hour_col").apply(
                 lambda g: float(np.median(g["y"].values - g["y_pred"].values))
             )
             correction = {int(h): round(float(v), 4) for h, v in grp.items()}
@@ -438,18 +451,13 @@ def train_model(df: pd.DataFrame, split_idx: int, hyperparams: dict = None):
         with open(HOURLY_CORRECTION_FILE, "w") as f:
             json.dump(correction, f, indent=2)
         avg_corr = np.mean(list(correction.values()))
-        print(f"      [TRACE] Additive bias correction saved  "
+        print(f"      [TRACE] Additive bias correction saved (rolling 30d window)  "
               f"(avg {avg_corr:+.2f} rph)  "
               f"h10={correction.get(10, 0):+.1f}  h12={correction.get(12, 0):+.1f}")
         mlflow.log_metric("avg_bias_additive_correction", round(avg_corr, 4))
         mlflow.log_artifact(HOURLY_CORRECTION_FILE)
 
-    # ── FIX 3: Hourly P25 floor ──────────────────────────────
-    # Computed on TRAINING actuals only. In predict_future the floor is applied
-    # AFTER bias correction as a hard minimum — prevents the model from
-    # predicting below what has historically been observed at that hour of day.
-    # NOTE (v6 bug fixed): the floor file was computed in v6 but never loaded
-    # or applied inside predict_future. Now it is explicitly applied.
+    # Hourly P25 floor (unchanged from v7 — bug was fixed there)
     with mlflow.start_run(run_name="step_hourly_floor", nested=True):
         train_floor_df = train_df.copy()
         train_floor_df["hour_col"] = pd.to_datetime(train_floor_df["ds"]).dt.hour
@@ -457,7 +465,6 @@ def train_model(df: pd.DataFrame, split_idx: int, hyperparams: dict = None):
         for hr, grp in train_floor_df.groupby("hour_col")["y"]:
             vals = grp.values
             p75  = float(np.percentile(vals, 75))
-            # Only set a non-zero floor for hours that have genuine activity
             floor_map[int(hr)] = round(float(np.percentile(vals, 25)), 2) if p75 > 0 else 0.0
 
         with open(HOURLY_FLOOR_FILE, "w") as f:
@@ -506,7 +513,7 @@ def evaluate_and_report(df: pd.DataFrame, split_idx: int) -> dict:
         rmse = np.sqrt(mean_squared_error(y_test, y_pred))
         mase = mae / naive_mae_train
 
-        # ── FIX 5: Track high-volume bias explicitly ─────────
+        # Track high-volume bias explicitly
         high_vol_mask = y_test > 50
         high_vol_bias = float(np.mean(y_pred[high_vol_mask] - y_test[high_vol_mask])) \
             if high_vol_mask.sum() > 0 else 0.0
@@ -556,6 +563,27 @@ def evaluate_and_report(df: pd.DataFrame, split_idx: int) -> dict:
             print(f"\n  Quantile interval [p10, p90]:")
             print(f"    Coverage (target ≈ 80%) : {coverage:.1f}%")
             print(f"    Avg interval width      : {avg_width:.2f} reports/hr")
+
+        # FIX 4 — Per-hour residual diagnostic (hours 8–18)
+        # Prints mean residual per peak hour so systematic biases are visible
+        # without post-hoc CSV analysis. Negative = under-predicting.
+        test_diag = test_df.copy()
+        test_diag["hour_col"] = pd.to_datetime(test_diag["ds"]).dt.hour
+        test_diag["residual"] = test_diag["y_pred"] - test_diag["y"]
+        hourly_resid = (test_diag[test_diag["hour_col"].between(8, 18)]
+                        .groupby("hour_col")["residual"]
+                        .agg(["mean", "count"])
+                        .round(2))
+        print(f"\n  Per-hour residual (mean bias) for peak hours 8–18:")
+        print(f"  {'Hour':<6} {'Mean Bias':>12} {'N Hours':>10}")
+        print(f"  {'-'*30}")
+        for hr, row in hourly_resid.iterrows():
+            flag = " ◄ HIGH BIAS" if abs(row["mean"]) > 10 else ""
+            print(f"  h{hr:<5} {row['mean']:>+12.2f} {int(row['count']):>10}{flag}")
+        mlflow.log_metrics({
+            f"resid_h{int(hr)}": float(row["mean"])
+            for hr, row in hourly_resid.iterrows()
+        })
 
     return metrics
 
@@ -708,10 +736,12 @@ def predict_future(df_history: pd.DataFrame, periods: int = 13 * 24) -> pd.DataF
     Post-prediction pipeline (in order):
       1. Raw XGBoost prediction (p50 / p10 / p90)
       2. Seasonal blend (ramps to 40% at horizon=168h to prevent lag compounding)
-      3. Additive hourly bias correction
-      4. FIX 3 — Hourly P25 floor (hard minimum from training P25 per hour)
-      5. FIX 4 — Two-stage spike boost  (blend toward hourly spike mean when classifier fires)
-      6. Horizon-aware quantile widening  (sqrt(day) scaling)
+      3. Additive hourly bias correction (rolling 30d window)
+      4. Hourly P25 floor (hard minimum from training P25 per hour)
+      5. Two-stage spike boost (blend=0.65 toward hourly spike mean when
+         classifier fires at prob >= 0.65; band widening only at prob >= 0.80)
+      6. Horizon-aware quantile widening — sqrt(day) capped at 1.5×,
+         SKIPPED for hours where spike boost already fired (FIX 3)
     """
     print(f"\n[TRACE] Forecasting {periods} periods ahead ({periods // 24:.1f} days)...")
 
@@ -744,9 +774,10 @@ def predict_future(df_history: pd.DataFrame, periods: int = 13 * 24) -> pd.DataF
             print("   [TRACE] Legacy multiplicative correction detected — ignoring (additive=0)")
         else:
             hourly_correction.update(loaded)
-            print(f"   [TRACE] Additive correction loaded  (avg {np.mean(vals):+.2f} rph)")
+            print(f"   [TRACE] Additive correction loaded (rolling 30d)  "
+                  f"(avg {np.mean(vals):+.2f} rph)")
 
-    # ── FIX 3: Load P25 floor ─────────────────────────────────
+    # ── Load P25 floor ────────────────────────────────────────
     hourly_floor = {h: 0.0 for h in range(24)}
     if os.path.exists(HOURLY_FLOOR_FILE):
         with open(HOURLY_FLOOR_FILE) as ff:
@@ -758,7 +789,7 @@ def predict_future(df_history: pd.DataFrame, periods: int = 13 * 24) -> pd.DataF
     else:
         print("   [TRACE] hourly_floor.json not found — floor disabled (re-train to enable)")
 
-    # ── FIX 4: Load spike classifier + metadata ───────────────
+    # ── Load spike classifier + metadata ──────────────────────
     spike_clf       = None
     spike_meta      = {}
     spike_available = (os.path.exists(SPIKE_CLASSIFIER_FILE)
@@ -770,7 +801,8 @@ def predict_future(df_history: pd.DataFrame, periods: int = 13 * 24) -> pd.DataF
             spike_meta = json.load(sm)
         print(f"   [TRACE] Spike classifier loaded  "
               f"(threshold={spike_meta.get('threshold', '?')} rph, "
-              f"blend_weight=0.35)")
+              f"blend={SPIKE_BLEND}, fire_thresh={SPIKE_THRESH}, "
+              f"band_thresh={SPIKE_BAND_THRESH})")
     else:
         print("   [TRACE] Spike classifier not found — spike boost disabled")
 
@@ -879,50 +911,62 @@ def predict_future(df_history: pd.DataFrame, periods: int = 13 * 24) -> pd.DataF
         y_seas = _seasonal(ds)
         y_hat  = (1 - alpha) * y_hat_raw + alpha * y_seas
 
-        # 3. Additive bias correction
+        # 3. Additive bias correction (now computed on rolling 30d window)
         bias_add  = hourly_correction.get(ds.hour, 0.0)
         y_hat     = max(y_hat     + bias_add, 0.0)
         y_hat_p10 = max(y_hat_p10 + bias_add, 0.0)
         y_hat_p90 = max(y_hat_p90 + bias_add, 0.0)
 
-        # 4. FIX 3 — Hourly P25 floor (v6 bug: this was computed but never applied)
+        # 4. Hourly P25 floor — only on weekday peak hours with real activity
         floor_val = hourly_floor.get(ds.hour, 0.0)
-        # Solo aplicar floor en horas con actividad real
         if row["is_peak_hour"] == 1 and row["is_weekend"] == 0:
-            y_hat = max(y_hat, floor_val)
+            y_hat     = max(y_hat,     floor_val)
             y_hat_p10 = max(y_hat_p10, floor_val)
-            y_hat_p90 = max(y_hat_p90, floor_val)   
+            y_hat_p90 = max(y_hat_p90, floor_val)
 
-        # 5. FIX 4 — Two-stage spike boost
-        # If classifier says P(spike) >= 0.50, blend prediction toward the
-        # per-hour conditional mean of spike hours (weight=0.35).
-        # This corrects the systematic −45 rph under-prediction on peak hours
-        # without affecting quiet hours where the classifier is silent.
+        # 5. FIX 2+3 — Two-stage spike boost (tuned vs v7)
+        # Changes from v7:
+        #   - Fire threshold raised 0.50 → 0.65  (fewer false positives on quiet hours)
+        #   - Blend weight raised 0.50 → 0.65    (stronger correction on true spikes)
+        #   - Band widening (1.20×) now gated at prob >= 0.80  (was always applied)
+        #   - spike_fired flag set so step 6 can skip horizon widening (FIX 3)
+        spike_fired = False
         if spike_clf is not None:
             spike_prob = float(spike_clf.predict_proba(X)[0][1])
-            if spike_prob >= 0.50:
+            if spike_prob >= SPIKE_THRESH:
                 hourly_spike_mean = spike_meta.get("hourly_spike_mean", {})
                 target_spike_val  = float(
                     hourly_spike_mean.get(
-                        str(ds.hour),                          # JSON keys are strings
+                        str(ds.hour),
                         spike_meta.get("overall_spike_mean", y_hat)
                     )
                 )
-                SPIKE_BLEND = 0.50   # blends 50% toward historical spike mean
-                # Solo aplicar spike boost en horas con actividad real
+                # Only apply on weekday peak hours with genuine activity
                 if row["is_peak_hour"] == 1 and row["is_weekend"] == 0:
                     y_hat = (1 - SPIKE_BLEND) * y_hat + SPIKE_BLEND * target_spike_val
-                # Widen bands proportionally when spike is detected
-                half = (y_hat_p90 - y_hat_p10) / 2 * 1.20
-                y_hat_p10 = max(y_hat - half, 0.0)
-                y_hat_p90 = y_hat + half
+                    spike_fired = True
 
-        # 6. Horizon-aware quantile widening (unchanged from v6)
-        day_frac   = (i + 1) / 24
-        width_mult = max(1.0, np.sqrt(day_frac))
-        half_width = (y_hat_p90 - y_hat_p10) / 2 * width_mult
-        y_hat_p10  = max(y_hat - half_width, 0.0)
-        y_hat_p90  = y_hat + half_width
+                # Band widening only for high-confidence spikes (prob >= 0.80)
+                # Previously this fired at the same threshold as the blend,
+                # causing over-wide bands for borderline spikes.
+                if spike_prob >= SPIKE_BAND_THRESH:
+                    half = (y_hat_p90 - y_hat_p10) / 2 * 1.20
+                    y_hat_p10 = max(y_hat - half, 0.0)
+                    y_hat_p90 = y_hat + half
+
+        # 6. FIX 1+3 — Horizon-aware quantile widening
+        # Changes from v7:
+        #   - width_mult capped at 1.5× (was sqrt(day) unbounded → reached 3.6×
+        #     at day 13, ballooning bands)
+        #   - Entire step skipped when spike boost already fired to prevent
+        #     double-stacking of multiplicative widening
+        if not spike_fired:
+            day_frac   = (i + 1) / 24
+            # FIX 1: cap at 1.5× to prevent band explosion at long horizons
+            width_mult = min(max(1.0, np.sqrt(day_frac)), 1.5)
+            half_width = (y_hat_p90 - y_hat_p10) / 2 * width_mult
+            y_hat_p10  = max(y_hat - half_width, 0.0)
+            y_hat_p90  = y_hat + half_width
 
         results.append({"ds":     ds,
                          "y_p10":  round(y_hat_p10, 2),
@@ -958,11 +1002,14 @@ def run_grid_search(df: pd.DataFrame, split_idx: int, force_promote: bool = Fals
         run_name = f"grid_{idx}_lr{hp['learning_rate']}_d{hp['max_depth']}"
         with mlflow.start_run(run_name=run_name) as run:
             mlflow.log_params({**hp,
-                                "config_index":      idx,
-                                "target_transform":  CURRENT_TRANSFORM,
-                                "sample_weight":     "y_squared",
-                                "p10_alpha":         0.025,
-                                "p90_alpha":         0.975})
+                                "config_index":       idx,
+                                "target_transform":   CURRENT_TRANSFORM,
+                                "sample_weight":      "y_squared",
+                                "p10_alpha":          0.10,
+                                "p90_alpha":          0.90,
+                                "spike_blend":        SPIKE_BLEND,
+                                "spike_thresh":       SPIKE_THRESH,
+                                "spike_band_thresh":  SPIKE_BAND_THRESH})
             models, df_trained, _ = train_model(df, split_idx, hyperparams=hp)
             metrics  = evaluate_and_report(df_trained, split_idx)
             promoted = promote_if_better(metrics, force_promote=force_promote)
@@ -997,19 +1044,22 @@ def run_with_mlflow(df: pd.DataFrame, split_idx: int,
         print(f"\n[TRACE] MLflow run started: {run_id}")
 
         mlflow.log_params({
-            "model_version":     MODEL_VERSION,
-            "n_estimators":      1000,
-            "learning_rate":     (hyperparams or {}).get("learning_rate", 0.02),
-            "max_depth":         (hyperparams or {}).get("max_depth", 7),
-            "objective_p50":     "reg:squarederror",
-            "sample_weight":     "y_squared",
-            "p10_alpha":         0.025,
-            "p90_alpha":         0.975,
-            "spike_blend_weight": 0.35,
-            "train_ratio":       TRAIN_RATIO,
-            "n_cv_folds":        N_CV_FOLDS,
-            "target_transform":  CURRENT_TRANSFORM,
-            "end_date":          end_date or "not_set",
+            "model_version":      MODEL_VERSION,
+            "n_estimators":       1000,
+            "learning_rate":      (hyperparams or {}).get("learning_rate", 0.02),
+            "max_depth":          (hyperparams or {}).get("max_depth", 7),
+            "objective_p50":      "reg:squarederror",
+            "sample_weight":      "y_squared",
+            "p10_alpha":          0.10,
+            "p90_alpha":          0.90,
+            "spike_blend_weight": SPIKE_BLEND,
+            "spike_fire_thresh":  SPIKE_THRESH,
+            "spike_band_thresh":  SPIKE_BAND_THRESH,
+            "width_mult_cap":     1.5,
+            "train_ratio":        TRAIN_RATIO,
+            "n_cv_folds":         N_CV_FOLDS,
+            "target_transform":   CURRENT_TRANSFORM,
+            "end_date":           end_date or "not_set",
         })
 
         models, df_trained, features_used = train_model(df, split_idx, hyperparams)
@@ -1045,9 +1095,9 @@ def run_with_mlflow(df: pd.DataFrame, split_idx: int,
 # 11. MAIN
 # ─────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    TRAIN_START = "2025-01-01"
-    TRAIN_END   = "2026-01-10"
-    GRID_SEARCH = "--grid-search" in sys.argv
+    TRAIN_START   = "2025-01-01"
+    TRAIN_END     = "2026-02-10"
+    GRID_SEARCH   = "--grid-search" in sys.argv
     FORCE_PROMOTE = ("reset" in sys.argv) or ("--reset" in sys.argv)
 
     # 1. Refresh data
@@ -1105,7 +1155,7 @@ if __name__ == "__main__":
             ) * 100
             bias     = float((merged["y_pred"] - merged["y_actual"]).mean())
 
-            # High-volume bias (target: was −45.7 in v6 → expect improvement)
+            # High-volume bias (target: < −10 rph, v7 was −16.98)
             hv_mask  = merged["y_actual"] > 50
             hv_bias  = float((merged.loc[hv_mask, "y_pred"]
                               - merged.loc[hv_mask, "y_actual"]).mean()) \
@@ -1115,23 +1165,37 @@ if __name__ == "__main__":
             print(f"    MAE           : {mae_13d:.4f}")
             print(f"    RMSE          : {rmse_13d:.4f}")
             print(f"    Overall bias  : {bias:+.4f}  ({'over' if bias > 0 else 'under'}-estimating)")
-            print(f"    High-vol bias : {hv_bias:+.4f}  (actual > 50 rph; v6 was −45.7)")
-            print(f"    Coverage      : {coverage:.1f}%  (p10–p90 interval; v6 was 44.8%)")
+            print(f"    High-vol bias : {hv_bias:+.4f}  (actual > 50 rph; v7 was −16.98)")
+            print(f"    Coverage      : {coverage:.1f}%  (p10–p90 interval; v7 was 99.6%, target 80%)")
+
+            # FIX 4 — per-hour residual on actual forecast window
+            merged["hour"] = merged["ds"].dt.hour
+            merged["residual"] = merged["y_pred"] - merged["y_actual"]
+            hourly_diag = (merged[merged["hour"].between(8, 18)]
+                           .groupby("hour")["residual"]
+                           .agg(["mean", "count"])
+                           .round(2))
+            print(f"\n  Per-hour forecast residual (8–18):")
+            print(f"  {'Hour':<6} {'Mean Bias':>12} {'N Hours':>10}")
+            print(f"  {'-'*30}")
+            for hr, row in hourly_diag.iterrows():
+                flag = " ◄" if abs(row["mean"]) > 10 else ""
+                print(f"  h{hr:<5} {row['mean']:>+12.2f} {int(row['count']):>10}{flag}")
 
             merged.to_csv("forecast_13d_vs_actuals.csv", index=False)
-            print(f"    Saved to forecast_13d_vs_actuals.csv")
+            print(f"\n    Saved to forecast_13d_vs_actuals.csv")
 
             mlflow.set_experiment(MLFLOW_EXPERIMENT)
             with mlflow.start_run(
                 run_name=f"eval_13d_v{MODEL_VERSION}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
             ):
                 mlflow.log_metrics({
-                    "eval_13d_mae":          mae_13d,
-                    "eval_13d_rmse":         rmse_13d,
-                    "eval_13d_bias":         bias,
+                    "eval_13d_mae":           mae_13d,
+                    "eval_13d_rmse":          rmse_13d,
+                    "eval_13d_bias":          bias,
                     "eval_13d_high_vol_bias": hv_bias,
-                    "eval_13d_coverage":     coverage,
-                    "eval_13d_hours":        len(merged),
+                    "eval_13d_coverage":      coverage,
+                    "eval_13d_hours":         len(merged),
                 })
                 mlflow.log_artifact("forecast_13d.csv")
                 mlflow.log_artifact("forecast_13d_vs_actuals.csv")
