@@ -44,6 +44,7 @@ import os
 import sys
 import shutil
 import pyodbc
+from config import MODELS_DIR, DATA_DIR
 import numpy as np
 import pandas as pd
 import polars as pl
@@ -97,27 +98,27 @@ def _linear_trend(values: np.ndarray):
 # 0. CONFIG
 # ─────────────────────────────────────────────────────────────
 COUNTRY     = "AR"
-DATA_PATH   = "DatosQuery.csv"
+DATA_PATH   = os.path.join(DATA_DIR, "DatosQuery.csv")
 TRAIN_RATIO = 0.80
 N_CV_FOLDS  = 5
 USE_LGBM    = False
 
 MLFLOW_EXPERIMENT           = "XGBoost_Hourly_Forecast"
-CHAMPION_METRICS_FILE       = "metrics.json"
-HOURLY_CORRECTION_FILE      = "hourly_correction.json"
-HOURLY_FLOOR_FILE           = "hourly_floor.json"
-SPIKE_CLASSIFIER_FILE       = "xgboost_spike_classifier.json"
-SPIKE_METADATA_FILE         = "spike_metadata.json"
-MODEL_METADATA_FILE         = "model_metadata.json"
+CHAMPION_METRICS_FILE       = os.path.join(MODELS_DIR, "metrics.json")
+HOURLY_CORRECTION_FILE      = os.path.join(MODELS_DIR, "hourly_correction.json")
+HOURLY_FLOOR_FILE           = os.path.join(MODELS_DIR, "hourly_floor.json")
+SPIKE_CLASSIFIER_FILE       = os.path.join(MODELS_DIR, "xgboost_spike_classifier.json")
+SPIKE_METADATA_FILE         = os.path.join(MODELS_DIR, "spike_metadata.json")
+MODEL_METADATA_FILE         = os.path.join(MODELS_DIR, "model_metadata.json")
 
 # FIX 6 — architecture bump forces auto-promotion on first v8 run
 CURRENT_TRANSFORM = "raw"
-MODEL_VERSION     = 8
+MODEL_VERSION     = 16
 
-# FIX 2 — spike tuning constants (raised from v7)
-SPIKE_BLEND        = 0.65   # was 0.50 — pulls harder toward spike-hour mean
-SPIKE_THRESH       = 0.65   # was 0.50 — reduces quiet-hour false positives
-SPIKE_BAND_THRESH  = 0.80   # new — additional band widening only above this
+# FIX 2 — spike tuning constants (tuned for v10)
+SPIKE_BLEND        = 0.65   # was 0.75 — moderate pull to spike mean
+SPIKE_THRESH       = 0.70   # was 0.55 — stricter spike gating
+SPIKE_BAND_THRESH  = 0.75   # additional band widening only above this
 
 
 # ─────────────────────────────────────────────────────────────
@@ -161,8 +162,11 @@ def engineer_features(pdf: pd.DataFrame, raw_df_pl: pl.DataFrame) -> pd.DataFram
     pdf["month"]        = pdf["ds"].dt.month
     pdf["is_month_end"] = pdf["ds"].dt.is_month_end.astype(int)
     pdf["is_weekend"]   = (pdf["weekday"] >= 5).astype(int)
+    pdf["is_monday"]    = (pdf["weekday"] == 0).astype(int)
+    pdf["is_monday_peak"]  = ((pdf["weekday"] == 0) & (pdf["hour"] >= 10) & (pdf["hour"] <= 15)).astype(int)
     pdf["is_holiday"]   = pdf["ds"].apply(lambda x: int(x in ch))
     pdf["is_peak_hour"] = ((pdf["hour"] >= 8) & (pdf["hour"] <= 18)).astype(int)
+    pdf["is_weekday_peak"] = ((pdf["is_weekend"] == 0) & (pdf["is_peak_hour"] == 1)).astype(int)
 
     pdf["weekend_x_peak"]            = pdf["is_weekend"] * pdf["is_peak_hour"]
     pdf["holiday_x_peak"]            = pdf["is_holiday"] * pdf["is_peak_hour"]
@@ -185,6 +189,13 @@ def engineer_features(pdf: pd.DataFrame, raw_df_pl: pl.DataFrame) -> pd.DataFram
     pdf["y_lag_3"]   = pdf["y"].shift(3)
     pdf["y_lag_24"]  = pdf["y"].shift(24)
     pdf["y_lag_168"] = pdf["y"].shift(168)
+
+    pdf["weekday_hour_interaction"] = pdf["weekday"] * 100 + pdf["hour"]
+    y_lag_24_75th = pdf["y_lag_24"].quantile(0.75)
+    pdf["was_spike_lag_24"] = (pdf["y_lag_24"] > y_lag_24_75th).astype(int)
+    y_lag_168_75th = pdf["y_lag_168"].quantile(0.75)
+    pdf["was_spike_lag_168"] = (pdf["y_lag_168"] > y_lag_168_75th).astype(int)
+    pdf["y_rolling_max_24"] = pdf["y"].shift(1).rolling(24).max()
 
     shifted = pdf["y"].shift(1)
     pdf["y_rolling_mean_3"]   = shifted.rolling(3).mean()
@@ -268,12 +279,13 @@ FEATURES = [
     "fourier_weekly_sin_1", "fourier_weekly_cos_1",
     "fourier_weekly_sin_2", "fourier_weekly_cos_2",
     "fourier_weekly_sin_3", "fourier_weekly_cos_3",
+    "weekday_hour_interaction", "was_spike_lag_24", "was_spike_lag_168", "y_rolling_max_24",
     "y_lag_1", "y_lag_2", "y_lag_3", "y_lag_24", "y_lag_168",
     "y_rolling_mean_3",  "y_rolling_mean_24",  "y_rolling_mean_168",
     "y_rolling_std_3",   "y_rolling_std_24",
     "log_y_lag_1", "log_y_lag_24", "log_y_lag_168",
     "log_y_rolling_mean_3", "log_y_rolling_mean_24", "log_y_rolling_mean_168",
-    "avg_param_span_days",
+    "avg_param_span_days", "is_monday", "is_monday_peak", "is_weekday_peak",
 ]
 
 
@@ -323,6 +335,8 @@ def train_model(df: pd.DataFrame, split_idx: int, hyperparams: dict = None):
                   "early_stopping_rounds": 50}
         if quantile_alpha is not None:
             params["quantile_alpha"] = quantile_alpha
+            params["reg_lambda"] = 1.5
+            params["reg_alpha"] = 0.1
 
         m = xgb.XGBRegressor(**params)
         fit_kw = dict(eval_set=[(test_df[features], y_test)], verbose=False)
@@ -362,6 +376,9 @@ def train_model(df: pd.DataFrame, split_idx: int, hyperparams: dict = None):
     df["y_pred"]     = model_p50.predict(df[features]).clip(min=0)
     df["y_pred_p10"] = model_p10.predict(df[features]).clip(min=0)
     df["y_pred_p90"] = model_p90.predict(df[features]).clip(min=0)
+    
+    # Update test_df with predictions
+    test_df = df.iloc[split_idx:].copy()
 
     # Two-stage spike classifier (unchanged architecture from v7)
     with mlflow.start_run(run_name="step_spike_classifier", nested=True):
@@ -430,13 +447,12 @@ def train_model(df: pd.DataFrame, split_idx: int, hyperparams: dict = None):
         mlflow.log_artifact(SPIKE_CLASSIFIER_FILE)
         mlflow.log_artifact(SPIKE_METADATA_FILE)
 
-    # FIX 5 — Bias correction on rolling 30-day window
-    # v7 computed correction on full test set (df.iloc[split_idx:]) which could
-    # be noisy if test period is small or unrepresentative. Using the most
-    # recent 30 days of the full dataset gives a more stable correction.
+    # FIX 5 — Bias correction on true validation window
+    # Validating correction directly on the test set gives a cleaner signal
+    # avoiding biased predictions over latest features on train tail.
     with mlflow.start_run(run_name="step_bias_calibration", nested=True):
-        # Use most recent 30 days (720 hours) for correction
-        correction_window = df.tail(min(720, len(df))).copy()
+        # Use true validation window for correction
+        correction_window = test_df.copy()
         correction_window["hour_col"] = pd.to_datetime(correction_window["ds"]).dt.hour
 
         correction = {}
@@ -457,33 +473,42 @@ def train_model(df: pd.DataFrame, split_idx: int, hyperparams: dict = None):
         mlflow.log_metric("avg_bias_additive_correction", round(avg_corr, 4))
         mlflow.log_artifact(HOURLY_CORRECTION_FILE)
 
-    # Hourly P25 floor (unchanged from v7 — bug was fixed there)
+    # Hourly floor split by weekday/weekend
     with mlflow.start_run(run_name="step_hourly_floor", nested=True):
         train_floor_df = train_df.copy()
         train_floor_df["hour_col"] = pd.to_datetime(train_floor_df["ds"]).dt.hour
+        train_floor_df["weekday_col"] = pd.to_datetime(train_floor_df["ds"]).dt.weekday
         floor_map = {}
-        for hr, grp in train_floor_df.groupby("hour_col")["y"]:
+        for hr, grp in train_floor_df[train_floor_df["weekday_col"] < 5].groupby("hour_col")["y"]:
             vals = grp.values
             p75  = float(np.percentile(vals, 75))
-            floor_map[int(hr)] = round(float(np.percentile(vals, 25)), 2) if p75 > 0 else 0.0
+            # P10 en lugar de P25 — evita piso inflado en horas pico
+            floor_map[int(hr)] = round(float(np.percentile(vals, 10)), 2) if p75 > 0 else 0.0   
 
+        floor_map_weekend = {}
+        for hr, grp in train_floor_df[train_floor_df["weekday_col"] >= 5].groupby("hour_col")["y"]:
+            vals = grp.values
+            floor_map_weekend[int(hr)] = round(float(np.percentile(vals, 10)), 2)
+
+        combined_floor = {"weekday": floor_map, "weekend": floor_map_weekend}
         with open(HOURLY_FLOOR_FILE, "w") as f:
-            json.dump(floor_map, f, indent=2)
+            json.dump(combined_floor, f, indent=2)
+
         peak_floors = {h: v for h, v in floor_map.items() if 9 <= h <= 15}
-        print(f"      [TRACE] Hourly P25 floor saved  "
+        print(f"      [TRACE] Hourly floor saved (Weekday)  "
               + "  ".join(f"h{h}={v:.0f}" for h, v in sorted(peak_floors.items())))
         mlflow.log_metrics({f"floor_h{h}": v for h, v in floor_map.items()})
         mlflow.log_artifact(HOURLY_FLOOR_FILE)
 
     # Stage challenger models
-    model_p50.save_model("xgboost_model_p50_challenger.json")
-    model_p10.save_model("xgboost_model_p10_challenger.json")
-    model_p90.save_model("xgboost_model_p90_challenger.json")
+    model_p50.save_model(os.path.join(MODELS_DIR, "xgboost_model_p50_challenger.json"))
+    model_p10.save_model(os.path.join(MODELS_DIR, "xgboost_model_p10_challenger.json"))
+    model_p90.save_model(os.path.join(MODELS_DIR, "xgboost_model_p90_challenger.json"))
 
-    with open("feature_list.json", "w") as f:
+    with open(os.path.join(MODELS_DIR, "feature_list.json"), "w") as f:
         json.dump(features, f)
     label_map = dict(enumerate(pd.factorize(df["main_report_type"])[1]))
-    with open("label_mapping.json", "w") as f:
+    with open(os.path.join(MODELS_DIR, "label_mapping.json"), "w") as f:
         json.dump(label_map, f)
 
     print("   [TRACE] Challenger models staged (p10/p50/p90 + spike classifier).")
@@ -557,9 +582,16 @@ def evaluate_and_report(df: pd.DataFrame, split_idx: int) -> dict:
         if "y_pred_p10" in test_df.columns and "y_pred_p90" in test_df.columns:
             p10 = test_df["y_pred_p10"].values
             p90 = test_df["y_pred_p90"].values
-            coverage  = np.mean((y_test >= p10) & (y_test <= p90)) * 100
-            avg_width = np.mean(p90 - p10)
-            mlflow.log_metrics({"quantile_coverage_pct": coverage, "quantile_avg_width": avg_width})
+            coverage  = float(np.mean((y_test >= p10) & (y_test <= p90)) * 100)
+            avg_width = float(np.mean(p90 - p10))
+            
+            shrink_factor = 1.0
+            if coverage > 90.0:
+                shrink_factor = float((coverage / 80.0) ** 0.5)
+                print(f"\n  [!] Coverage = {coverage:.1f}% (> 90%). Shrink factor = {shrink_factor:.3f}")
+            metrics["shrink_factor"] = shrink_factor
+
+            mlflow.log_metrics({"quantile_coverage_pct": coverage, "quantile_avg_width": avg_width, "shrink_factor": shrink_factor})
             print(f"\n  Quantile interval [p10, p90]:")
             print(f"    Coverage (target ≈ 80%) : {coverage:.1f}%")
             print(f"    Avg interval width      : {avg_width:.2f} reports/hr")
@@ -626,12 +658,12 @@ def promote_if_better(new_metrics: dict, force_promote: bool = False) -> bool:
                    f"MASE {new_mase:.4f} < {champion_mase:.4f}"))
         print(f"\n   [TRACE] Promoting challenger → champion ({reason})")
         for name in ["p50", "p10", "p90"]:
-            src = f"xgboost_model_{name}_challenger.json"
-            dst = f"xgboost_model_{name}.json"
+            src = os.path.join(MODELS_DIR, f"xgboost_model_{name}_challenger.json")
+            dst = os.path.join(MODELS_DIR, f"xgboost_model_{name}.json")
             if os.path.exists(src):
                 shutil.copy2(src, dst)
-        if os.path.exists("xgboost_model_p50.json"):
-            shutil.copy2("xgboost_model_p50.json", "xgboost_model.json")
+        if os.path.exists(os.path.join(MODELS_DIR, "xgboost_model_p50.json")):
+            shutil.copy2(os.path.join(MODELS_DIR, "xgboost_model_p50.json"), os.path.join(MODELS_DIR, "xgboost_model.json"))
 
         with open(CHAMPION_METRICS_FILE, "w") as f:
             json.dump(new_metrics, f, indent=2)
@@ -649,7 +681,7 @@ def promote_if_better(new_metrics: dict, force_promote: bool = False) -> bool:
               f"(MASE {new_mase:.4f} > {champion_mase:.4f})")
 
     for name in ["p50", "p10", "p90"]:
-        tmp = f"xgboost_model_{name}_challenger.json"
+        tmp = os.path.join(MODELS_DIR, f"xgboost_model_{name}_challenger.json")
         if os.path.exists(tmp):
             try:
                 os.remove(tmp)
@@ -750,11 +782,11 @@ def predict_future(df_history: pd.DataFrame, periods: int = 13 * 24) -> pd.DataF
         m.load_model(path)
         return m
 
-    model_p50 = _load_xgb("xgboost_model_p50.json")
-    model_p10 = _load_xgb("xgboost_model_p10.json")
-    model_p90 = _load_xgb("xgboost_model_p90.json")
+    model_p50 = _load_xgb(os.path.join(MODELS_DIR, "xgboost_model_p50.json"))
+    model_p10 = _load_xgb(os.path.join(MODELS_DIR, "xgboost_model_p10.json"))
+    model_p90 = _load_xgb(os.path.join(MODELS_DIR, "xgboost_model_p90.json"))
 
-    with open("feature_list.json") as f:
+    with open(os.path.join(MODELS_DIR, "feature_list.json")) as f:
         features = json.load(f)
 
     meta      = _load_model_metadata()
@@ -774,20 +806,40 @@ def predict_future(df_history: pd.DataFrame, periods: int = 13 * 24) -> pd.DataF
             print("   [TRACE] Legacy multiplicative correction detected — ignoring (additive=0)")
         else:
             hourly_correction.update(loaded)
-            print(f"   [TRACE] Additive correction loaded (rolling 30d)  "
+            print(f"   [TRACE] Additive correction loaded (validation window)  "
                   f"(avg {np.mean(vals):+.2f} rph)")
+            peak_corr = {h: hourly_correction[h] for h in range(9, 16)}
+            print(f"   [TRACE] Peak hour corrections: {peak_corr}")
 
     # ── Load P25 floor ────────────────────────────────────────
-    hourly_floor = {h: 0.0 for h in range(24)}
+    hourly_floor_weekday = {h: 0.0 for h in range(24)}
+    hourly_floor_weekend = {h: 0.0 for h in range(24)}
     if os.path.exists(HOURLY_FLOOR_FILE):
         with open(HOURLY_FLOOR_FILE) as ff:
             loaded_floor = json.load(ff)
-        hourly_floor.update({int(k): float(v) for k, v in loaded_floor.items()})
-        peak_f = {h: hourly_floor[h] for h in range(9, 16)}
-        print(f"   [TRACE] P25 floor loaded  "
+        if "weekday" in loaded_floor:
+            hourly_floor_weekday.update({int(k): float(v) for k, v in loaded_floor["weekday"].items()})
+            hourly_floor_weekend.update({int(k): float(v) for k, v in loaded_floor["weekend"].items()})
+        else:
+            hourly_floor_weekday.update({int(k): float(v) for k, v in loaded_floor.items()})
+        
+        peak_f = {h: hourly_floor_weekday[h] for h in range(9, 16)}
+        print(f"   [TRACE] Floor loaded (Weekday) "
               + "  ".join(f"h{h}={v:.0f}" for h, v in sorted(peak_f.items())))
     else:
         print("   [TRACE] hourly_floor.json not found — floor disabled (re-train to enable)")
+
+    # ── Load shrink factor ────────────────────────────────────
+    shrink_factor = 1.0
+    if os.path.exists(CHAMPION_METRICS_FILE):
+        try:
+            with open(CHAMPION_METRICS_FILE) as f:
+                champ_metrics = json.load(f)
+            shrink_factor = float(champ_metrics.get("shrink_factor", 1.0))
+            if shrink_factor != 1.0:
+                print(f"   [TRACE] Calibration shrink_factor loaded: {shrink_factor:.3f}")
+        except Exception:
+            pass
 
     # ── Load spike classifier + metadata ──────────────────────
     spike_clf       = None
@@ -834,7 +886,8 @@ def predict_future(df_history: pd.DataFrame, periods: int = 13 * 24) -> pd.DataF
         return float(seasonal_table.get(key, seasonal_hr_mean.get(ds_stamp.hour, 0.0)))
 
     def _blend_alpha(step_i: int) -> float:
-        return min(0.40, step_i / 168 * 0.40)
+        # Ramp up to 0.70 over the first 5 days (120 hours) to aggressively prevent compounding recursive drift
+        return min(0.70, step_i / 120 * 0.70)
 
     y_buffer = list(df_history["y"].values[-200:])
     results  = []
@@ -847,8 +900,11 @@ def predict_future(df_history: pd.DataFrame, periods: int = 13 * 24) -> pd.DataF
         row["month"]        = ds.month
         row["is_month_end"] = int(ds.is_month_end)
         row["is_weekend"]   = int(ds.weekday() >= 5)
+        row["is_monday"]    = int(ds.weekday() == 0)
+        row["is_monday_peak"] = int(ds.weekday() == 0 and 10 <= ds.hour <= 15)  
         row["is_holiday"]   = int(ds in ch)
         row["is_peak_hour"] = int(8 <= ds.hour <= 18)
+        row["is_weekday_peak"] = int(row["is_weekend"] == 0 and row["is_peak_hour"] == 1)
         row["weekend_x_peak"]            = row["is_weekend"] * row["is_peak_hour"]
         row["holiday_x_peak"]            = row["is_holiday"] * row["is_peak_hour"]
         row["weekend_or_holiday_x_peak"] = int(
@@ -908,6 +964,8 @@ def predict_future(df_history: pd.DataFrame, periods: int = 13 * 24) -> pd.DataF
 
         # 2. Seasonal blend (prevents lag compounding at long horizons)
         alpha  = _blend_alpha(i)
+        if row["is_weekend"] == 1:
+            alpha = max(alpha, 0.60)
         y_seas = _seasonal(ds)
         y_hat  = (1 - alpha) * y_hat_raw + alpha * y_seas
 
@@ -917,9 +975,15 @@ def predict_future(df_history: pd.DataFrame, periods: int = 13 * 24) -> pd.DataF
         y_hat_p10 = max(y_hat_p10 + bias_add, 0.0)
         y_hat_p90 = max(y_hat_p90 + bias_add, 0.0)
 
-        # 4. Hourly P25 floor — only on weekday peak hours with real activity
-        floor_val = hourly_floor.get(ds.hour, 0.0)
-        if row["is_peak_hour"] == 1 and row["is_weekend"] == 0:
+        # 4. Hourly floor / ceiling — differentiated by weekday vs weekend
+        if row["is_weekend"] == 1:
+            floor_val = hourly_floor_weekend.get(ds.hour, 0.0)
+            # Use min() to clamp over-predictions on weekends down to the historical floor median
+            y_hat     = min(y_hat, max(floor_val * 1.5, 3.0))
+            y_hat_p10 = 0.0
+            y_hat_p90 = min(y_hat_p90, max(floor_val * 3.0, 8.0))
+        elif row["is_peak_hour"] == 1:
+            floor_val = hourly_floor_weekday.get(ds.hour, 0.0)
             y_hat     = max(y_hat,     floor_val)
             y_hat_p10 = max(y_hat_p10, floor_val)
             y_hat_p90 = max(y_hat_p90, floor_val)
@@ -943,7 +1007,17 @@ def predict_future(df_history: pd.DataFrame, periods: int = 13 * 24) -> pd.DataF
                 )
                 # Only apply on weekday peak hours with genuine activity
                 if row["is_peak_hour"] == 1 and row["is_weekend"] == 0:
-                    y_hat = (1 - SPIKE_BLEND) * y_hat + SPIKE_BLEND * target_spike_val
+                    # Reducir blend en lunes — el spike mean puede estar inflado
+                    if row.get("is_monday_peak", 0) == 1:
+                        current_blend = min(SPIKE_BLEND, 0.55)
+                    elif row.get("is_monday", 0) == 1:
+                        current_blend = min(SPIKE_BLEND, 0.40)
+                    elif spike_prob >= 0.80:
+                        current_blend = SPIKE_BLEND
+                    else:
+                        current_blend = 0.40
+                    
+                    y_hat = (1 - current_blend) * y_hat + current_blend * target_spike_val
                     spike_fired = True
 
                 # Band widening only for high-confidence spikes (prob >= 0.80)
@@ -968,6 +1042,14 @@ def predict_future(df_history: pd.DataFrame, periods: int = 13 * 24) -> pd.DataF
             y_hat_p10  = max(y_hat - half_width, 0.0)
             y_hat_p90  = y_hat + half_width
 
+        # Apply calibration shrink_factor (Recalibrate P10/P90)
+        if shrink_factor != 1.0:
+            half_w = (y_hat_p90 - y_hat_p10) / 2
+            y_hat_p10 = max(y_hat - (half_w / shrink_factor), 0.0)
+            y_hat_p90 = y_hat + (half_w / shrink_factor)
+
+        # Apply global two-tier bias safeguard correction
+        bias_adj = 0.0  # el hourly_correction del paso 3 ya lo maneja
         results.append({"ds":     ds,
                          "y_p10":  round(y_hat_p10, 2),
                          "y_pred": round(y_hat,     2),
@@ -1079,12 +1161,15 @@ def run_with_mlflow(df: pd.DataFrame, split_idx: int,
 
         with mlflow.start_run(run_name="step_log_artifacts", nested=True):
             for art in ["feature_list.json", "label_mapping.json",
-                        HOURLY_CORRECTION_FILE, HOURLY_FLOOR_FILE,
-                        SPIKE_CLASSIFIER_FILE, SPIKE_METADATA_FILE,
-                        MODEL_METADATA_FILE, CHAMPION_METRICS_FILE,
                         "xgboost_model_p50.json",
                         "xgboost_model_p10.json",
                         "xgboost_model_p90.json"]:
+                p = os.path.join(MODELS_DIR, art)
+                if os.path.exists(p):
+                    mlflow.log_artifact(p)
+            for art in [HOURLY_CORRECTION_FILE, HOURLY_FLOOR_FILE,
+                        SPIKE_CLASSIFIER_FILE, SPIKE_METADATA_FILE,
+                        MODEL_METADATA_FILE, CHAMPION_METRICS_FILE]:
                 if os.path.exists(art):
                     mlflow.log_artifact(art)
 
@@ -1095,8 +1180,8 @@ def run_with_mlflow(df: pd.DataFrame, split_idx: int,
 # 11. MAIN
 # ─────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    TRAIN_START   = "2025-01-01"
-    TRAIN_END     = "2026-02-10"
+    TRAIN_START   = "2025-05-01"
+    TRAIN_END     = "2026-03-10"
     GRID_SEARCH   = "--grid-search" in sys.argv
     FORCE_PROMOTE = ("reset" in sys.argv) or ("--reset" in sys.argv)
 
@@ -1126,8 +1211,8 @@ if __name__ == "__main__":
     print("13-DAY FORECAST (Primary Evaluation)")
     print("=" * 60)
     future_13d = predict_future(df_for_forecast, periods=13 * 24)
-    future_13d.to_csv("forecast_13d.csv", index=False)
-    print(f"Saved forecast_13d.csv ({len(future_13d)} hours)")
+    future_13d.to_csv(os.path.join(DATA_DIR, "forecast_13d.csv"), index=False)
+    print(f"Saved forecast_13d.csv ({len(future_13d)} hours in data/)")
 
     # 5. Evaluate against actuals
     try:
@@ -1182,8 +1267,8 @@ if __name__ == "__main__":
                 flag = " ◄" if abs(row["mean"]) > 10 else ""
                 print(f"  h{hr:<5} {row['mean']:>+12.2f} {int(row['count']):>10}{flag}")
 
-            merged.to_csv("forecast_13d_vs_actuals.csv", index=False)
-            print(f"\n    Saved to forecast_13d_vs_actuals.csv")
+            merged.to_csv(os.path.join(DATA_DIR, "forecast_13d_vs_actuals.csv"), index=False)
+            print(f"\n    Saved to forecast_13d_vs_actuals.csv in data/")
 
             mlflow.set_experiment(MLFLOW_EXPERIMENT)
             with mlflow.start_run(
@@ -1197,8 +1282,8 @@ if __name__ == "__main__":
                     "eval_13d_coverage":      coverage,
                     "eval_13d_hours":         len(merged),
                 })
-                mlflow.log_artifact("forecast_13d.csv")
-                mlflow.log_artifact("forecast_13d_vs_actuals.csv")
+                mlflow.log_artifact(os.path.join(DATA_DIR, "forecast_13d.csv"))
+                mlflow.log_artifact(os.path.join(DATA_DIR, "forecast_13d_vs_actuals.csv"))
         else:
             print(f"  (Insufficient actuals: {len(merged)} hours matched)")
 

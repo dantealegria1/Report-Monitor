@@ -60,7 +60,7 @@ try:
         df = quality_sanitize(df)
         
         # Enforce global analysis window for 2025
-        df = filter_by_date_range(df, "2024-01-01", "2026-02-11")
+        df = filter_by_date_range(df, "2024-01-01", "2026-03-10")
         
         # Create hourly time series
         hourly_ts = build_hourly_report_count(df)

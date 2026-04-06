@@ -7,6 +7,8 @@ import json
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
 import holidays
+import os
+from config import MODELS_DIR
 
 st.set_page_config(page_title="Hybrid Prediction Dashboard", layout="wide")
 
@@ -14,16 +16,16 @@ st.set_page_config(page_title="Hybrid Prediction Dashboard", layout="wide")
 @st.cache_resource
 def load_all_resources():
     try:
-        with open('prophet_model.json', 'r') as f:
+        with open(os.path.join(MODELS_DIR, 'prophet_model.json'), 'r') as f:
             m = model_from_json(f.read())
         
         xgb_model = xgb.XGBRegressor()
-        xgb_model.load_model('xgboost_model.json')
+        xgb_model.load_model(os.path.join(MODELS_DIR, 'xgboost_model.json'))
         
-        with open('label_mapping.json', 'r') as f:
+        with open(os.path.join(MODELS_DIR, 'label_mapping.json'), 'r') as f:
             label_map = json.load(f)
             
-        with open('metrics.json', 'r') as f:
+        with open(os.path.join(MODELS_DIR, 'metrics.json'), 'r') as f:
             perf_metrics = json.load(f)
             
         return m, xgb_model, label_map, perf_metrics

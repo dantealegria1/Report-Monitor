@@ -3,6 +3,7 @@ import pyodbc
 import polars as pl
 import numpy as np
 from dotenv import load_dotenv
+from config import DATA_DIR
 
 load_dotenv()
 
@@ -74,17 +75,17 @@ def run_etl_process(start_date=None, end_date=None):
     df_metrics.group_by("month_year").agg([
         (pl.col("AE").mean()).alias("MAE"),
         (pl.col("SE").mean().sqrt()).alias("RMSE")
-    ]).sort("month_year").write_csv("pbi_metricas_error_mensual.csv")
+    ]).sort("month_year").write_csv(os.path.join(DATA_DIR, "pbi_metricas_error_mensual.csv"))
 
     # 2. Evolucion Temporal de Tiempos Promedio
     df_success.group_by(["month_year", "ReportName"]).agg(
         pl.col("duration_seconds").mean().alias("avg_dur")
-    ).sort(["month_year", "avg_dur"]).write_csv("pbi_evolucion_tiempos.csv")
+    ).sort(["month_year", "avg_dur"]).write_csv(os.path.join(DATA_DIR, "pbi_evolucion_tiempos.csv"))
 
     # 3. Carga por Dia y Hora (Heatmap de saturacion)
     df.group_by(["day_of_week", "hour"]).agg(
         pl.len().alias("count")
-    ).sort(["day_of_week", "hour"]).write_csv("pbi_carga_horaria.csv")
+    ).sort(["day_of_week", "hour"]).write_csv(os.path.join(DATA_DIR, "pbi_carga_horaria.csv"))
 
     # 4. Analisis de Reportes Criticos e Impacto
     df_success.group_by("ReportName").agg([
@@ -92,7 +93,7 @@ def run_etl_process(start_date=None, end_date=None):
         pl.col("duration_seconds").mean().alias("avg_dur"),
         pl.col("duration_seconds").sum().alias("total_impact_s"),
         pl.col("duration_seconds").std().alias("variability_std")
-    ]).sort("total_impact_s", descending=True).write_csv("pbi_reportes_criticos.csv")
+    ]).sort("total_impact_s", descending=True).write_csv(os.path.join(DATA_DIR, "pbi_reportes_criticos.csv"))
 
     # 5. Eficiencia por Tipo de Reporte (Success Rate)
     df.group_by("ReportType").agg([
@@ -100,7 +101,7 @@ def run_etl_process(start_date=None, end_date=None):
         (pl.col("execution_status") == "success").sum().alias("ok")
     ]).with_columns(
         (pl.col("ok") / pl.col("total") * 100).alias("success_rate")
-    ).write_csv("pbi_eficiencia_tipo.csv")
+    ).write_csv(os.path.join(DATA_DIR, "pbi_eficiencia_tipo.csv"))
 
     # 6. Deteccion de Anomalias (Z-Score Robusto - MAD)
     # Implementacion metodologica Semana 3
@@ -125,7 +126,7 @@ def run_etl_process(start_date=None, end_date=None):
     # Exportar Umbrales Formales
     df_stats.select([
         "ReportName", "hour", "median_dur", "mad_dur_adj"
-    ]).write_csv("pbi_umbrales_estadisticos.csv")
+    ]).write_csv(os.path.join(DATA_DIR, "pbi_umbrales_estadisticos.csv"))
 
     # Calcular Z-Score Robusto Modificado: 0.6745 * (x - median) / MAD
     # Nota: 0.6745 es la constante de consistencia para distribucion normal
@@ -140,7 +141,7 @@ def run_etl_process(start_date=None, end_date=None):
     df_anomalias.select([
         "started_at", "ReportName", "ReportType", "duration_seconds", 
         "median_dur", "mad_dur_adj", "robust_z_score", "execution_status"
-    ]).write_csv("pbi_excepciones_criticas.csv")
+    ]).write_csv(os.path.join(DATA_DIR, "pbi_excepciones_criticas.csv"))
 
     print("Proceso completado. Archivos CSV generados para Power BI.")
 

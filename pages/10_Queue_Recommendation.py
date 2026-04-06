@@ -14,14 +14,16 @@ from components.filters import (
     render_presentation_mode_toggle, apply_presentation_mode,
 )
 from queue_clustering import (
-    run_clustering, simulate_daily_throughput, simulate_backlog, NR_QUEUE_CONFIG,
+    run_clustering, simulate_daily_throughput, simulate_backlog,
+    simulate_contention, NR_QUEUE_CONFIG,
 )
 
 st.set_page_config(page_title="Queue Recommendation · NR", layout="wide")
 st.title("Queue Recommendation — NR Reports")
 st.caption(
-    "Clusters NR reports into S/M/L/XL using KMeans on log-duration. "
-    "Compares current queue assignment vs KNN recommendation and simulates daily throughput."
+    "Clusters NR reports into size bands using KMeans (optimal k via silhouette) "
+    "on enriched features. Compares current queue assignment vs KNN recommendation, "
+    "simulates throughput, contention, and cost."
 )
 
 
@@ -87,28 +89,61 @@ if res["error"]:
     st.warning(res["error"])
     st.stop()
 
-fp: pd.DataFrame = res["features_pd"]
-knn_acc: float   = res["knn_accuracy"]
-thresholds: dict = res["band_thresholds"]
+fp: pd.DataFrame     = res["features_pd"]
+knn_acc: float       = res["knn_accuracy"]
+thresholds: dict     = res["band_thresholds"]
+optimal_k: int       = res["optimal_k"]
+sil_scores: dict     = res["silhouette_scores"]
+cost_curr: float     = res["cost_current"]
+cost_rec: float      = res["cost_recommended"]
 
 # ── KPIs ────────────────────────────────────────────────────────────────────────
 st.subheader("📊 Clustering Results")
-m1, m2, m3, m4 = st.columns(4)
+m1, m2, m3, m4, m5, m6 = st.columns(6)
 m1.metric("Reports evaluated", len(fp))
 m2.metric("KNN accuracy", f"{knn_acc:.2%}")
-m3.metric("Size bands", "4")
+m3.metric("Optimal k", optimal_k)
 n_mismatch = int((~fp["size_match"]).sum()) if "size_match" in fp.columns else 0
-m4.metric("Size mismatches (current ≠ KNN)", n_mismatch)
+m4.metric("Size mismatches", n_mismatch)
+avg_dist = fp["mismatch_distance"].mean() if "mismatch_distance" in fp.columns else 0
+m5.metric("Avg mismatch dist", f"{avg_dist:.2f}")
+if cost_curr and cost_curr > 0:
+    pct = (cost_curr - cost_rec) / cost_curr * 100
+    m6.metric("Cost savings", f"{pct:+.1f}%")
+else:
+    m6.metric("Cost savings", "—")
 
+# Cluster thresholds
+active_sizes = sorted(fp["knn_size"].unique(), key=lambda s: {"XS":0,"S":1,"M":2,"L":3,"XL":4,"XXL":5}.get(s, 9))
 thresh_txt = "  ·  ".join(
-    f"**{sz}** median p95={fmt_s(thresholds.get(sz, 0))}" for sz in ["S", "M", "L", "XL"]
+    f"**{sz}** median p95={fmt_s(thresholds.get(sz, 0))}" for sz in active_sizes
 )
 st.caption(f"Cluster thresholds: {thresh_txt}")
 
+# ── Silhouette chart ───────────────────────────────────────────────────────────
+if sil_scores:
+    with st.expander("🔍 Silhouette Score per k", expanded=False):
+        ks = sorted(sil_scores.keys())
+        scores = [sil_scores[k] for k in ks]
+        colors_sil = ["#1565c0" if k == optimal_k else "#90caf9" for k in ks]
+        fig_sil = go.Figure(go.Bar(
+            x=[str(k) for k in ks], y=scores,
+            marker_color=colors_sil,
+            text=[f"{s:.3f}" for s in scores], textposition="outside",
+        ))
+        fig_sil.update_layout(
+            xaxis_title="Number of clusters (k)",
+            yaxis_title="Silhouette score",
+            height=260, margin=dict(l=0, r=0, t=10, b=0),
+            template="plotly_white",
+        )
+        st.plotly_chart(fig_sil, use_container_width=True)
+        st.caption(f"Best k = **{optimal_k}** (silhouette = {sil_scores.get(optimal_k, 0):.4f})")
+
 # ── p95 distribution ────────────────────────────────────────────────────────────
-colors = {"S": "#4caf50", "M": "#2196f3", "L": "#ff9800", "XL": "#f44336"}
+colors = {"XS": "#9c27b0", "S": "#4caf50", "M": "#2196f3", "L": "#ff9800", "XL": "#f44336", "XXL": "#795548"}
 fig_dist = go.Figure()
-for sz in ["S", "M", "L", "XL"]:
+for sz in active_sizes:
     sub = fp[fp["knn_size"] == sz]["p95_seconds"]
     if len(sub):
         fig_dist.add_trace(go.Box(y=sub, name=sz, marker_color=colors.get(sz, "#888"),
@@ -117,12 +152,49 @@ fig_dist.update_layout(yaxis_title="p95 seconds", showlegend=False,
                         height=240, margin=dict(l=0, r=0, t=10, b=0), template="plotly_white")
 st.plotly_chart(fig_dist, use_container_width=True)
 
+# ── Mismatch distance distribution ────────────────────────────────────────────
+if "mismatch_distance" in fp.columns:
+    with st.expander("📏 Mismatch Distance Distribution", expanded=False):
+        dist_counts = fp["mismatch_distance"].value_counts().sort_index()
+        dist_colors = {0: "#4caf50", 1: "#ffeb3b", 2: "#ff9800", 3: "#f44336"}
+        fig_md = go.Figure(go.Bar(
+            x=[str(int(d)) for d in dist_counts.index],
+            y=dist_counts.values,
+            marker_color=[dist_colors.get(int(d), "#888") for d in dist_counts.index],
+            text=dist_counts.values, textposition="outside",
+        ))
+        fig_md.update_layout(
+            xaxis_title="Mismatch distance (0 = exact match, 3 = worst)",
+            yaxis_title="Number of reports",
+            height=240, margin=dict(l=0, r=0, t=10, b=0), template="plotly_white",
+        )
+        st.plotly_chart(fig_md, use_container_width=True)
+
+# ── Peak-Hour Analysis ────────────────────────────────────────────────────────
+if "peak_hour_ratio" in fp.columns:
+    with st.expander("🕐 Peak-Hour Analysis (09:00–17:00)", expanded=False):
+        fig_pk = go.Figure()
+        for sz in active_sizes:
+            sub = fp[fp["knn_size"] == sz]["peak_hour_ratio"]
+            if len(sub):
+                fig_pk.add_trace(go.Box(y=sub, name=sz, marker_color=colors.get(sz, "#888"),
+                                         boxpoints="outliers"))
+        fig_pk.update_layout(
+            yaxis_title="% of runs during peak hours",
+            showlegend=False, height=240,
+            margin=dict(l=0, r=0, t=10, b=0), template="plotly_white",
+        )
+        st.plotly_chart(fig_pk, use_container_width=True)
+        st.caption(
+            "Reports with a high peak-hour ratio compete more for queue slots during busy hours."
+        )
+
 # ── Comparison table ───────────────────────────────────────────────────────────
 st.subheader("🔀 Current Assignment vs. KNN Recommendation")
 st.caption(
     "`current_size` = size from DB config Id lookup · "
     "`knn_size` = KMeans + KNN recommendation · "
-    "`current_instances` = concurrent slots in current config"
+    "`mismatch_distance` = ordinal distance (0=match, 3=worst)"
 )
 
 tbl = fp.copy()
@@ -130,14 +202,22 @@ for raw, pretty in [("avg_seconds","Avg"), ("median_seconds","Median"), ("p95_se
     if raw in tbl.columns:
         tbl[pretty] = tbl[raw].apply(fmt_s)
 
-tbl["Size match?"] = tbl["size_match"].map({True: "✅", False: "⚠️"}) if "size_match" in tbl.columns else "—"
+# Colored severity  (improvement #7)
+severity_map = {0: "✅", 1: "🟡", 2: "🟠", 3: "🔴"}
+if "mismatch_distance" in tbl.columns:
+    tbl["Severity"] = tbl["mismatch_distance"].map(
+        lambda d: severity_map.get(int(d), "❓") if pd.notna(d) else "—"
+    )
+else:
+    tbl["Severity"] = "—"
 
 disp = [c for c in [
     "ReportId", "ReportName",
     "current_size", "current_queue_number", "current_instances",
     "knn_size", "knn_queue_number", "knn_instances",
-    "Size match?",
+    "Severity", "mismatch_distance",
     "total_runs", "Avg", "Median", "p95", "failure_rate",
+    "peak_hour_ratio",
 ] if c in tbl.columns]
 
 st.dataframe(
@@ -145,6 +225,32 @@ st.dataframe(
        .reset_index(drop=True)[disp],
     use_container_width=True, height=420,
 )
+
+# ── Efficiency Comparison ─────────────────────────────────────────────────────
+st.subheader("💰 Efficiency Comparison — Current vs. Recommended")
+st.caption(
+    "Compares resource efficiency (p95 / instances) and assignment quality. "
+    "All values are percentages — higher improvement % is better."
+)
+if cost_curr and cost_curr > 0 and cost_rec is not None:
+    efficiency_pct = (1 - cost_rec / cost_curr) * 100  # % improvement
+    mismatch_pct   = fp["mismatch_distance"].gt(0).mean() * 100 if "mismatch_distance" in fp.columns else 0
+    perfect_pct    = fp["size_match"].mean() * 100 if "size_match" in fp.columns else 0
+    avg_dist       = fp["mismatch_distance"].mean() if "mismatch_distance" in fp.columns else 0
+
+    cc1, cc2, cc3, cc4 = st.columns(4)
+    cc1.metric("Efficiency improvement", f"{efficiency_pct:+.1f}%",
+               help="How much more efficient the recommended arrangement is vs. current")
+    cc2.metric("Correct assignments", f"{perfect_pct:.0f}%",
+               help="% of reports where current queue matches the recommendation")
+    cc3.metric("Mismatched reports", f"{mismatch_pct:.0f}%",
+               delta=f"avg distance {avg_dist:.1f}", delta_color="inverse",
+               help="% of reports whose current size ≠ recommended size")
+    cc4.metric("Resource utilisation gain", 
+               f"{(cost_curr - cost_rec) / cost_curr * 100:+.1f}%",
+               help="% reduction in total p95/instances cost")
+else:
+    st.info("Not enough data to compute efficiency comparison.")
 
 # ── Daily Throughput Simulation ────────────────────────────────────────────────
 st.subheader("⏱️ Daily Throughput — Current vs. Recommended Arrangement")
@@ -199,6 +305,45 @@ else:
                delta=f"{tot_rec - tot_curr:+,.0f} h", delta_color="inverse")
     sc4.metric("Time saved (estimated)", f"{max(0, tot_curr - tot_rec):,.1f} h")
 
+# ── Queue Contention ──────────────────────────────────────────────────────────
+st.subheader("🔧 Queue Contention — Concurrent Slot Utilisation")
+st.caption(
+    "Hourly count of concurrent instance slots in use.  \n"
+    "Higher recommended values mean extra parallelism; the system can drain work faster."
+)
+
+with st.spinner("Simulating queue contention…"):
+    contention = simulate_contention(df_nr, fp)
+
+if not contention.empty:
+    fig_ct = go.Figure()
+    fig_ct.add_trace(go.Scatter(
+        x=contention["hour"], y=contention["concurrent_current"],
+        name="Current slots in use", mode="lines",
+        line=dict(color="#ef6c00", width=1.5),
+        fill="tozeroy", fillcolor="rgba(239,108,0,0.08)",
+    ))
+    fig_ct.add_trace(go.Scatter(
+        x=contention["hour"], y=contention["concurrent_rec"],
+        name="Recommended slots in use", mode="lines",
+        line=dict(color="#1565c0", width=1.5, dash="dash"),
+    ))
+    fig_ct.update_layout(
+        xaxis_title="Hour", yaxis_title="Concurrent slots",
+        legend=dict(orientation="h", y=1.04, x=0),
+        height=320, hovermode="x unified",
+        template="plotly_white", margin=dict(l=0, r=0, t=30, b=0),
+    )
+    st.plotly_chart(fig_ct, use_container_width=True)
+
+    ct1, ct2, ct3 = st.columns(3)
+    ct1.metric("Peak slots (current)", int(contention["concurrent_current"].max()))
+    ct2.metric("Peak slots (recommended)", int(contention["concurrent_rec"].max()),
+               delta=f"{int(contention['concurrent_rec'].max()) - int(contention['concurrent_current'].max()):+d}")
+    ct3.metric("Avg active reports/hour", f"{contention['active_reports'].mean():.1f}")
+else:
+    st.info("No contention data available (need `started_at` and `finished_at` columns).")
+
 # ── Hourly Backlog ─────────────────────────────────────────────────────────────
 st.subheader("📈 Hourly Backlog (reports created but not yet started)")
 st.caption(
@@ -244,11 +389,14 @@ if not sim_curr.empty:
 # ── Profile ────────────────────────────────────────────────────────────────────
 st.subheader("📋 Profile by KNN Size Band")
 pcols = [c for c in ["knn_size", "avg_seconds", "median_seconds", "p95_seconds",
-                      "knn_instances", "failure_rate", "total_runs"] if c in fp.columns]
+                      "knn_instances", "failure_rate", "total_runs",
+                      "peak_hour_ratio", "cv"] if c in fp.columns]
 if pcols:
+    agg_dict = {c: "mean" for c in pcols if c not in ("knn_size", "total_runs")}
+    if "total_runs" in pcols:
+        agg_dict["total_runs"] = "sum"
     prof = (fp[pcols].groupby("knn_size")
-            .agg({c: "mean" for c in pcols if c != "knn_size" and c != "total_runs"}
-                 | ({"total_runs": "sum"} if "total_runs" in pcols else {}))
+            .agg(agg_dict)
             .reset_index().rename(columns={"knn_size": "Size"})
             .sort_values("Size"))
     for c in ["avg_seconds", "median_seconds", "p95_seconds"]:
@@ -256,12 +404,17 @@ if pcols:
             prof[c] = prof[c].apply(fmt_s)
     if "knn_instances" in prof.columns:
         prof["knn_instances"] = prof["knn_instances"].round(1)
+    if "peak_hour_ratio" in prof.columns:
+        prof["peak_hour_ratio"] = prof["peak_hour_ratio"].map(lambda v: f"{v:.1%}")
+    if "cv" in prof.columns:
+        prof["cv"] = prof["cv"].round(2)
     st.dataframe(prof, use_container_width=True, hide_index=True)
 
 # ── CSV ────────────────────────────────────────────────────────────────────────
 dl = [c for c in ["ReportId","ReportName","current_size","current_queue_number",
                    "current_instances","knn_size","knn_queue_number","knn_instances",
-                   "size_match","total_runs","avg_seconds","p95_seconds","failure_rate"]
+                   "size_match","mismatch_distance","total_runs","avg_seconds","p95_seconds",
+                   "failure_rate","peak_hour_ratio","cv","cost_current","cost_recommended"]
       if c in fp.columns]
 st.download_button("⬇️ Download CSV", fp[dl].to_csv(index=False).encode(),
                    "nr_queue_recommendations.csv", "text/csv")

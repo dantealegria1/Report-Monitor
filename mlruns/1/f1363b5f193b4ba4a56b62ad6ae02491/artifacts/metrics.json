@@ -1,0 +1,11 @@
+{
+  "naive_mae": 13.22640218878249,
+  "naive_rmse": 21.49181436769175,
+  "mae": 10.323901698462125,
+  "rmse": 16.493544720170323,
+  "mase": 0.7962000478632931,
+  "high_vol_bias": -7.5802951990763345,
+  "target_transform": "raw",
+  "model_version": 8,
+  "shrink_factor": 1.0
+}

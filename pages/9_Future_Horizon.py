@@ -8,6 +8,7 @@ from datetime import timedelta
 import json
 import holidays
 import os
+from config import MODELS_DIR
 
 st.set_page_config(page_title="Future Horizon", layout="wide")
 
@@ -20,26 +21,26 @@ st.markdown("""
 @st.cache_resource
 def load_models():
     try:
-        with open("prophet_model.json", "r") as f:
+        with open(os.path.join(MODELS_DIR, "prophet_model.json"), "r") as f:
             prophet = model_from_json(f.read())
             
         xgb_p50 = xgb.XGBRegressor()
-        xgb_p50.load_model("xgboost_model_p50.json")
+        xgb_p50.load_model(os.path.join(MODELS_DIR, "xgboost_model_p50.json"))
 
         xgb_p10 = xgb.XGBRegressor()
-        xgb_p10.load_model("xgboost_model_p10.json")
+        xgb_p10.load_model(os.path.join(MODELS_DIR, "xgboost_model_p10.json"))
 
         xgb_p90 = xgb.XGBRegressor()
-        xgb_p90.load_model("xgboost_model_p90.json")
+        xgb_p90.load_model(os.path.join(MODELS_DIR, "xgboost_model_p90.json"))
             
-        with open("label_mapping.json", "r") as f:
+        with open(os.path.join(MODELS_DIR, "label_mapping.json"), "r") as f:
             label_map = json.load(f)
 
-        with open("feature_list.json", "r") as f:
+        with open(os.path.join(MODELS_DIR, "feature_list.json"), "r") as f:
             feature_list = json.load(f)
             
-        if os.path.exists("model_metadata.json"):
-            with open("model_metadata.json", "r") as f:
+        if os.path.exists(os.path.join(MODELS_DIR, "model_metadata.json")):
+            with open(os.path.join(MODELS_DIR, "model_metadata.json"), "r") as f:
                 meta = json.load(f)
         else:
             meta = {"target_transform": "log1p"}

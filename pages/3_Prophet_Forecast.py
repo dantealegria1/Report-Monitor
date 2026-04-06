@@ -7,7 +7,9 @@ import polars as pl
 import pandas as pd
 import numpy as np
 import math
+import os
 import plotly.graph_objects as go
+from config import MODELS_DIR
 
 # Prophet utilities
 from utils.prophet_forecast import (
@@ -123,15 +125,15 @@ def render_prophet_page(hourly_ts: pl.DataFrame):
     from prophet.serialize import model_from_json
     
     use_pretrained = False
-    if os.path.exists('prophet_model.json'):
+    if os.path.exists(os.path.join(MODELS_DIR, 'prophet_model.json')):
         use_pretrained = st.sidebar.checkbox("Load Pre-trained Model (prophet_model.json)", value=True)
 
     # Load performance metrics if they exist for consistency
     perf_metrics = None
-    import os, json
-    if os.path.exists('metrics.json'):
+    import json
+    if os.path.exists(os.path.join(MODELS_DIR, 'metrics.json')):
         try:
-            with open('metrics.json', 'r') as f:
+            with open(os.path.join(MODELS_DIR, 'metrics.json'), 'r') as f:
                 perf_metrics = json.load(f)
         except:
             pass
@@ -139,7 +141,7 @@ def render_prophet_page(hourly_ts: pl.DataFrame):
     # Train or Load Prophet model
     try:
         if use_pretrained:
-            with open('prophet_model.json', 'r') as f:
+            with open(os.path.join(MODELS_DIR, 'prophet_model.json'), 'r') as f:
                 model = model_from_json(f.read())
             
             # trainer.py currently DOES NOT use log_transform or internal lag1 in Prophet

@@ -8,6 +8,7 @@ import plotly.graph_objects as go
 from datetime import datetime, timedelta
 import holidays
 import os
+from config import MODELS_DIR
 
 # Page Config
 st.set_page_config(page_title="XGBoost Analytical Dashboard", layout="wide")
@@ -24,30 +25,30 @@ except FileNotFoundError:
 def load_all_resources():
     try:
         # Prophet (legacy/comparison)
-        with open('prophet_model.json', 'r') as f:
+        with open(os.path.join(MODELS_DIR, 'prophet_model.json'), 'r') as f:
             m = model_from_json(f.read())
         
         # New Quantile Models
         xgb_p50 = xgb.XGBRegressor()
-        xgb_p50.load_model('xgboost_model_p50.json')
+        xgb_p50.load_model(os.path.join(MODELS_DIR, 'xgboost_model_p50.json'))
         
         xgb_p10 = xgb.XGBRegressor()
-        xgb_p10.load_model('xgboost_model_p10.json')
+        xgb_p10.load_model(os.path.join(MODELS_DIR, 'xgboost_model_p10.json'))
         
         xgb_p90 = xgb.XGBRegressor()
-        xgb_p90.load_model('xgboost_model_p90.json')
+        xgb_p90.load_model(os.path.join(MODELS_DIR, 'xgboost_model_p90.json'))
         
-        with open('label_mapping.json', 'r') as f:
+        with open(os.path.join(MODELS_DIR, 'label_mapping.json'), 'r') as f:
             label_map = json.load(f)
             
-        with open('metrics.json', 'r') as f:
+        with open(os.path.join(MODELS_DIR, 'metrics.json'), 'r') as f:
             perf_metrics = json.load(f)
 
-        with open('feature_list.json', 'r') as f:
+        with open(os.path.join(MODELS_DIR, 'feature_list.json'), 'r') as f:
             feature_list = json.load(f)
             
-        if os.path.exists('model_metadata.json'):
-            with open('model_metadata.json', 'r') as f:
+        if os.path.exists(os.path.join(MODELS_DIR, 'model_metadata.json')):
+            with open(os.path.join(MODELS_DIR, 'model_metadata.json'), 'r') as f:
                 meta = json.load(f)
         else:
             meta = {"target_transform": "log1p"}
@@ -218,6 +219,10 @@ with tab2:
         "is_holiday": 1 if dt in ar_holidays else 0,
         "is_weekend": 1 if dt.weekday() >= 5 else 0,
         "is_peak_hour": 1 if 8 <= target_hour <= 18 else 0,
+        "is_monday": 1 if dt.weekday() == 0 else 0,
+        "is_monday_peak": 1 if dt.weekday() == 0 and 10 <= target_hour <= 15 else 0,
+        "is_weekday_peak": 1 if dt.weekday() < 5 and 8 <= target_hour <= 18 else 0,
+        "weekday_hour_interaction": dt.weekday() * 100 + target_hour,
         "y_lag_1": float(lag1),
         "y_lag_24": float(lag24),
         "y_lag_168": float(lag168),

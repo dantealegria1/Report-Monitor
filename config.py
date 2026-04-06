@@ -6,6 +6,10 @@ Handles environment variables and application settings.
 import os
 from dotenv import load_dotenv
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MODELS_DIR = os.path.join(BASE_DIR, "models")
+DATA_DIR = os.path.join(BASE_DIR, "data")
+
 # Load environment variables
 load_dotenv()
 
@@ -33,5 +37,5 @@ def validate_config():
 CACHE_TTL = 600  # Cache time-to-live in seconds
 MAX_DURATION_HOURS = 6  # Maximum reasonable report duration
 TOP_REPORTS_LIMIT = 200  # Number of top reports to show in filters
-REPORTS_REPO_PATH = os.getenv("REPORTS_REPO_PATH", r"C:\Branches\PTP")  # Default to user provided path if env not set
+REPORTS_REPO_PATH = os.getenv("REPORTS_REPO_PATH", r"C:\Branches\Release")  # Default to user provided path if env not set
 

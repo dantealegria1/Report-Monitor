@@ -160,6 +160,13 @@ def enrich_hourly_ts_with_features(hourly_ts: pl.DataFrame, df_raw: pl.DataFrame
         ((pl.col("ds").dt.hour() >= 8) & (pl.col("ds").dt.hour() <= 18)).cast(pl.Int64).alias("is_peak_hour")
     ])
     
+    df = df.with_columns([
+        (pl.col("weekday") == 0).cast(pl.Int64).alias("is_monday"),
+        ((pl.col("weekday") == 0) & (pl.col("hour") >= 10) & (pl.col("hour") <= 15)).cast(pl.Int64).alias("is_monday_peak"),
+        ((pl.col("is_weekend") == 0) & (pl.col("is_peak_hour") == 1)).cast(pl.Int64).alias("is_weekday_peak"),
+        (pl.col("weekday") * 100 + pl.col("hour")).alias("weekday_hour_interaction")
+    ])
+    
     # 2. Argentina Holidays
     import holidays
     ar_holidays = holidays.CountryHoliday('AR')
@@ -204,6 +211,17 @@ def enrich_hourly_ts_with_features(hourly_ts: pl.DataFrame, df_raw: pl.DataFrame
         pl.col("y").shift(3).fill_null(0).alias("y_lag_3"),
         pl.col("y").shift(24).fill_null(0).alias("y_lag_24"),
         pl.col("y").shift(168).fill_null(0).alias("y_lag_168"),
+    ])
+    
+    y_lag_24_75th = df.select(pl.col("y_lag_24").quantile(0.75)).item()
+    if y_lag_24_75th is None: y_lag_24_75th = 0.0
+    y_lag_168_75th = df.select(pl.col("y_lag_168").quantile(0.75)).item()
+    if y_lag_168_75th is None: y_lag_168_75th = 0.0
+
+    df = df.with_columns([
+        (pl.col("y_lag_24") > y_lag_24_75th).cast(pl.Int64).alias("was_spike_lag_24"),
+        (pl.col("y_lag_168") > y_lag_168_75th).cast(pl.Int64).alias("was_spike_lag_168"),
+        pl.col("y").shift(1).rolling_max(window_size=24).fill_null(0).alias("y_rolling_max_24"),
     ])
     
     # Rolling stats (on shifted y to avoid leakage)

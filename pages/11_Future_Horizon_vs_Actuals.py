@@ -4,6 +4,7 @@ import numpy as np
 import plotly.graph_objects as go
 import os
 from sklearn.metrics import mean_absolute_error, mean_squared_error
+from config import DATA_DIR
 from scipy.stats import pearsonr
 
 st.set_page_config(page_title="Future Horizon vs Actuals", layout="wide")
@@ -12,9 +13,7 @@ st.title("Future Horizon vs Actual Results")
 st.markdown("""
     *Comparison of the 13-day recursive projection against actual reported values. This allows evaluating the ongoing accuracy of the forecasting engine.*
 """)
-
-DATA_FILE = "forecast_15d_vs_actuals.csv"
-
+DATA_FILE = os.path.join(DATA_DIR, "forecast_13d_vs_actuals.csv")
 if not os.path.exists(DATA_FILE):
     st.warning(f"⚠️ Data file `{DATA_FILE}` not found. Please ensure that the model has been trained and actuals are available in the database to generate this comparison.")
     st.stop()
@@ -35,19 +34,12 @@ if df is None or df.empty:
     st.warning("No data available for comparison.")
     st.stop()
 
-# Get the first date (start of horizon)
+# Get the dates overview
 horizon_start = df['ds'].min()
-horizon_end = horizon_start + pd.Timedelta(days=15)
 actual_end = df['ds'].max()
+total_days = (actual_end - horizon_start).days
 
-if actual_end < horizon_end:
-    st.warning(f"⚠️ El dataset llega hasta {actual_end.strftime('%Y-%m-%d %H:%M')}, lo cual es menor a los 15 días esperados desde {horizon_start.strftime('%Y-%m-%d %H:%M')}. Mostrando la información disponible.")
-
-df = df[(df['ds'] >= horizon_start) & (df['ds'] <= horizon_end)]
-
-if df.empty:
-    st.warning("No data available in the required 15-day range.")
-    st.stop()
+st.info(f"📊 Evaluando datos desde **{horizon_start.strftime('%Y-%m-%d %H:%M')}** hasta **{actual_end.strftime('%Y-%m-%d %H:%M')}** ({total_days} días totales disponibles en el dataset de validación).")
 
 # --- METRICS ---
 st.subheader("Performance Metrics")
@@ -139,7 +131,7 @@ fig.update_layout(
     yaxis_title="Hourly Reports",
     margin=dict(r=0, l=0)
 )
-st.plotly_chart(fig, use_container_width=True)
+st.plotly_chart(fig, width='stretch')
 
 # --- DATA TABLE ---
 st.subheader("Raw Data")
@@ -151,5 +143,5 @@ with st.expander("View Data Table"):
             'y_p90': '{:.2f}',
             'y_actual': '{:.1f}'
         }),
-        use_container_width=True
+        width='stretch'
     )
